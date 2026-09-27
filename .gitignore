@@ -8,3 +8,4 @@ data/
 *.csv.gz
 model*.json
 config.yaml
+*.egg-info/
