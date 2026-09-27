@@ -14,6 +14,12 @@ const PALETTE = {
   },
 };
 
+// Categorical slots for rooms, fixed order (validated; see README).
+const SERIES = {
+  light: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"],
+  dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
+};
+
 const REFRESH_MS = 60_000;
 const BOX_W = 210;
 const BOX_H = 128;
@@ -73,6 +79,7 @@ class ThermalMpcPanel extends HTMLElement {
     this._mode = "now";
     this._entryIdx = 0;
     this._charts = new Map();
+    this._showFree = false;
   }
 
   set hass(hass) {
@@ -102,6 +109,10 @@ class ThermalMpcPanel extends HTMLElement {
 
   get _pal() {
     return this._hass?.themes?.darkMode ? PALETTE.dark : PALETTE.light;
+  }
+
+  get _series() {
+    return this._hass?.themes?.darkMode ? SERIES.dark : SERIES.light;
   }
 
   async _load() {
@@ -178,6 +189,8 @@ class ThermalMpcPanel extends HTMLElement {
         </div>
         ${e.message ? `<div class="banner">${esc(e.message)}</div>` : ""}
       </section>
+
+      ${e.plan ? this._planCard(e) : ""}
 
       <section class="card">
         <div class="card-head">
@@ -396,6 +409,153 @@ class ThermalMpcPanel extends HTMLElement {
         stroke-linecap="round" class="flow" style="animation-duration:${speed}" marker-end="url(#arrowhead)"/>`;
   }
 
+  // --------------------------------------------------------------- plan card
+
+  _planCard(e) {
+    const p = e.plan;
+    const pal = this._pal;
+    const colors = this._series;
+    const rooms = e.rooms;
+    const actionLabel = { heat: "Heat", cool: "Cool", idle: "Idle" }[p.action] || p.action;
+    const actionIcon = { heat: "▲", cool: "▼", idle: "–" }[p.action] || "";
+    const thermo = p.thermostat_action || "unknown";
+    const busy = { heating: "heat", cooling: "cool" }[thermo] || "idle";
+    const agree = busy === p.action;
+    const t = p.times;
+    const W = 920;
+    const L = 40;
+    const R = 120; // room for end labels
+    const x = (i) => L + (i / (t.length - 1 || 1)) * (W - L - R);
+    const fmtT = (sec) => new Date(sec * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    const xTicks = [];
+    for (let i = 0; i < t.length; i++) {
+      const d = new Date(t[i] * 1000);
+      if (d.getMinutes() === 0 && d.getHours() % 6 === 0) xTicks.push(i);
+    }
+    const niceRange = (vals, minSpan) => {
+      let lo = Math.min(...vals);
+      let hi = Math.max(...vals);
+      if (hi - lo < minSpan) { const mid = (hi + lo) / 2; lo = mid - minSpan / 2; hi = mid + minSpan / 2; }
+      const step = [0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10].find((st) => st >= (hi - lo) / 4) ?? 20;
+      return [Math.floor(lo / step) * step, Math.ceil(hi / step) * step, step];
+    };
+
+    // Chart 1: planned room temperatures with comfort band.
+    const H1 = 220;
+    const T1 = 10;
+    const B1 = 20;
+    const allT = rooms.flatMap((r) => [...(p.planned[r.id] || []), ...(this._showFree ? p.free[r.id] || [] : [])]).filter((v) => v != null);
+    const [lo1, hi1, st1] = niceRange([...allT, p.target - p.band, p.target + p.band], 2);
+    const y1 = (v) => T1 + (1 - (v - lo1) / (hi1 - lo1)) * (H1 - T1 - B1);
+    const path = (arr) => arr.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y1(v).toFixed(1)}`).join("");
+    const ticks1 = [];
+    for (let v = lo1; v <= hi1 + 1e-9; v += st1) ticks1.push(v);
+    const ends = rooms.map((r, k) => ({ k, y: y1(p.planned[r.id][t.length - 1]), name: r.name }))
+      .sort((a, b) => a.y - b.y);
+    for (let i = 1; i < ends.length; i++) ends[i].y = Math.max(ends[i].y, ends[i - 1].y + 13);
+    const chart1 = `
+      <svg class="plan" id="plan-temps" viewBox="0 0 ${W} ${H1}" role="img" aria-label="Planned room temperatures for the next 24 hours">
+        <rect x="${L}" y="${y1(p.target + p.band)}" width="${W - L - R}" height="${y1(p.target - p.band) - y1(p.target + p.band)}" class="bandfill"/>
+        ${ticks1.map((v) => `<line x1="${L}" x2="${W - R}" y1="${y1(v)}" y2="${y1(v)}" class="gridline"/>
+          <text class="tick" x="${L - 6}" y="${y1(v) + 4}" text-anchor="end">${v.toFixed(st1 < 1 ? 1 : 0)}</text>`).join("")}
+        ${xTicks.map((i) => `<line x1="${x(i)}" x2="${x(i)}" y1="${T1}" y2="${H1 - B1}" class="gridline faint"/>`).join("")}
+        ${this._showFree ? rooms.map((r, k) => `<path d="${path(p.free[r.id])}" fill="none" stroke="${colors[k % 8]}" stroke-width="1.5" stroke-dasharray="4 4" opacity="0.8"/>`).join("") : ""}
+        ${rooms.map((r, k) => `<path d="${path(p.planned[r.id])}" fill="none" stroke="${colors[k % 8]}" stroke-width="2" stroke-linejoin="round"/>`).join("")}
+        ${ends.map((d) => `<circle cx="${W - R + 6}" cy="${d.y - 4}" r="3.5" fill="${colors[d.k % 8]}"/>
+          <text class="endlabel" x="${W - R + 14}" y="${d.y}">${esc(clip(d.name, 16))}</text>`).join("")}
+        <line class="cross" x1="0" x2="0" y1="${T1}" y2="${H1 - B1}" visibility="hidden"/>
+        <rect class="hover" x="${L}" y="0" width="${W - L - R}" height="${H1}" fill="transparent"/>
+      </svg>`;
+
+    // Chart 2: hourly duty bars (heating up = warm colour, cooling down = cool colour).
+    const H2 = 90;
+    const blocks = p.duty.heating.length;
+    const bw = (W - L - R) / blocks;
+    const hasCool = p.duty.cooling.some((v) => v > 0.001);
+    const mid = hasCool ? H2 / 2 : H2 - 16;
+    const span = hasCool ? H2 / 2 - 8 : H2 - 24;
+    const bars = p.duty.heating.map((h, b) => {
+      const c = p.duty.cooling[b];
+      const bx = L + b * bw + 1;
+      const w = Math.max(1, bw - 2);
+      let out = "";
+      if (h > 0.001) {
+        const hh = h * span;
+        out += `<path d="M${bx},${mid}V${mid - hh + 3}Q${bx},${mid - hh} ${bx + 3},${mid - hh}H${bx + w - 3}Q${bx + w},${mid - hh} ${bx + w},${mid - hh + 3}V${mid}Z" fill="${pal.gain}"/>`;
+      }
+      if (c > 0.001) {
+        const ch = c * span;
+        out += `<path d="M${bx},${mid}V${mid + ch - 3}Q${bx},${mid + ch} ${bx + 3},${mid + ch}H${bx + w - 3}Q${bx + w},${mid + ch} ${bx + w},${mid + ch - 3}V${mid}Z" fill="${pal.loss}"/>`;
+      }
+      const tip = `${fmtT(t[0] + b * p.block_hours * 3600)}: heating ${Math.round(h * 100)} %${hasCool ? `, cooling ${Math.round(c * 100)} %` : ""}`;
+      return `<g data-tip="${esc(tip)}"><rect x="${L + b * bw}" y="0" width="${bw}" height="${H2}" fill="transparent"/>${out}</g>`;
+    }).join("");
+    const chart2 = `
+      <svg class="plan" viewBox="0 0 ${W} ${H2}" role="img" aria-label="Planned heating and cooling duty per hour">
+        <line x1="${L}" x2="${W - R}" y1="${mid}" y2="${mid}" class="zero"/>
+        <text class="tick" x="${L - 6}" y="${mid - span + 4}" text-anchor="end">100%</text>
+        ${hasCool ? `<text class="tick" x="${L - 6}" y="${mid + span + 4}" text-anchor="end">100%</text>` : ""}
+        ${bars}
+        <text class="endlabel" x="${W - R + 14}" y="${mid - span / 2 + 4}">Heating</text>
+        ${hasCool ? `<text class="endlabel" x="${W - R + 14}" y="${mid + span / 2 + 4}">Cooling</text>` : ""}
+      </svg>`;
+
+    // Chart 3: outdoor forecast.
+    const H3 = 110;
+    const T3 = 8;
+    const B3 = 22;
+    const [lo3, hi3, st3] = niceRange(p.t_out, 4);
+    const y3 = (v) => T3 + (1 - (v - lo3) / (hi3 - lo3)) * (H3 - T3 - B3);
+    const ticks3 = [];
+    for (let v = lo3; v <= hi3 + 1e-9; v += st3) ticks3.push(v);
+    const chart3 = `
+      <svg class="plan" id="plan-out" viewBox="0 0 ${W} ${H3}" role="img" aria-label="Outdoor temperature forecast">
+        ${ticks3.map((v) => `<line x1="${L}" x2="${W - R}" y1="${y3(v)}" y2="${y3(v)}" class="gridline"/>
+          <text class="tick" x="${L - 6}" y="${y3(v) + 4}" text-anchor="end">${v.toFixed(st3 < 1 ? 1 : 0)}</text>`).join("")}
+        ${xTicks.map((i) => `<text class="tick" x="${x(i)}" y="${H3 - 6}" text-anchor="middle">${esc(fmtT(t[i]))}</text>`).join("")}
+        <path d="${p.t_out.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y3(v).toFixed(1)}`).join("")}" fill="none" class="outline"/>
+        <text class="endlabel" x="${W - R + 14}" y="${y3(p.t_out[p.t_out.length - 1]) + 4}">Outdoor</text>
+      </svg>`;
+
+    this._charts.set("plan-temps", {
+      kind: "plan", t, x, L, W, R, fmtT, rooms, planned: p.planned, free: p.free, t_out: p.t_out, colors,
+    });
+
+    const src = p.sources || {};
+    return `
+      <section class="card">
+        <div class="card-head">
+          <h2>Next 24 hours <span class="pill">shadow mode</span></h2>
+          <label class="toggle"><input type="checkbox" class="showfree" ${this._showFree ? "checked" : ""}/> Show without heating</label>
+        </div>
+        <div class="tiles plan-tiles">
+          <div class="tile"><div class="k">Recommended now</div>
+            <div class="v"><span class="act ${p.action}" aria-hidden="true">${actionIcon}</span>${actionLabel}</div>
+            <div class="s">thermostat: ${esc(thermo)} · ${agree ? "agrees" : "differs"}</div></div>
+          <div class="tile"><div class="k">Setpoint that would do it</div>
+            <div class="v">${p.recommended_setpoint != null ? `${fmt(p.recommended_setpoint, 1)} °C` : "–"}</div>
+            <div class="s">target ${fmt(p.target, 1)} ± ${fmt(p.band, 1)} K (${esc(p.target_source || "")})</div></div>
+          <div class="tile"><div class="k">Planned heating</div>
+            <div class="v">${fmt(p.heating_hours, 1)} h</div>
+            <div class="s">${p.cooling_hours > 0 ? `cooling ${fmt(p.cooling_hours, 1)} h · ` : ""}next 24 h</div></div>
+          <div class="tile"><div class="k">Outside the comfort band</div>
+            <div class="v">${fmt(p.discomfort_kh.planned, 1)} K·h</div>
+            <div class="s">${fmt(p.discomfort_kh.free, 1)} K·h with no heating</div></div>
+        </div>
+        <div class="legend">
+          ${rooms.map((r, k) => `<span><span class="sw line" style="background:${colors[k % 8]}"></span>${esc(r.name)}</span>`).join("")}
+          <span><span class="sw bandsw"></span>Comfort band</span>
+          ${this._showFree ? `<span class="muted">dashed: no heating</span>` : ""}
+        </div>
+        ${chart1}
+        <h3 class="sub-h">Planned duty per hour</h3>
+        ${chart2}
+        <h3 class="sub-h">Outdoor forecast (°C)</h3>
+        ${chart3}
+        <p class="note">Nothing is sent to the thermostat yet. Forecast sources: outdoor ${esc(src.outdoor || "–")}${src.solar ? `, sun ${esc(src.solar)}` : ""}. Planned ${relTime(p.created)}.</p>
+      </section>`;
+  }
+
   // -------------------------------------------------------------- room cards
 
   _roomCard(e, r) {
@@ -550,6 +710,10 @@ class ThermalMpcPanel extends HTMLElement {
         this._mode = btn.dataset.mode;
         this._render();
       }));
+    root.querySelector("input.showfree")?.addEventListener("change", (ev) => {
+      this._showFree = ev.target.checked;
+      this._render();
+    });
     root.querySelector("button.retrain")?.addEventListener("click", () => {
       if (entry) this._retrain(entry.entry_id);
     });
@@ -574,6 +738,28 @@ class ThermalMpcPanel extends HTMLElement {
     for (const [id, c] of this._charts) {
       const svg = root.getElementById(id);
       if (!svg) continue;
+      if (c.kind === "plan") {
+        const cross = svg.querySelector(".cross");
+        const hover = svg.querySelector(".hover");
+        hover.addEventListener("mousemove", (ev) => {
+          const pt = svg.createSVGPoint();
+          pt.x = ev.clientX;
+          pt.y = ev.clientY;
+          const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+          const frac = (p.x - c.L) / (c.W - c.L - c.R);
+          const i = Math.max(0, Math.min(c.t.length - 1, Math.round(frac * (c.t.length - 1))));
+          cross.setAttribute("x1", c.x(i));
+          cross.setAttribute("x2", c.x(i));
+          cross.setAttribute("visibility", "visible");
+          show(ev, `<div class="tt-h">${esc(c.fmtT(c.t[i]))} · outdoor ${fmt(c.t_out[i], 1)} °C</div>` +
+            c.rooms.map((r, k) => `<div><span class="sw line" style="background:${c.colors[k % 8]}"></span>${esc(r.name)} <b>${fmt(c.planned[r.id][i], 1)} °C</b>${this._showFree ? ` <span class="muted">(${fmt(c.free[r.id][i], 1)} without heating)</span>` : ""}</div>`).join(""));
+        });
+        hover.addEventListener("mouseleave", () => {
+          cross.setAttribute("visibility", "hidden");
+          hide();
+        });
+        continue;
+      }
       const cross = svg.querySelector(".cross");
       const hover = svg.querySelector(".hover");
       hover.addEventListener("mousemove", (ev) => {
@@ -691,6 +877,21 @@ const STYLE = `
     font-size: 12px; line-height: 1.5; box-shadow: 0 4px 14px rgba(0,0,0,.18);
   }
   .tt-h { font-weight: 600; margin-bottom: 2px; }
+  .plan { width: 100%; height: auto; display: block; }
+  .bandfill { fill: var(--secondary-text-color); opacity: .12; }
+  .sw.bandsw { background: var(--secondary-text-color); opacity: .25; }
+  .gridline.faint { opacity: .5; }
+  .endlabel { font-size: 12px; fill: var(--primary-text-color); }
+  .outline { stroke: var(--secondary-text-color); stroke-width: 2; }
+  .sub-h { margin: 12px 0 4px; font-size: 13px; color: var(--secondary-text-color); font-weight: 500; }
+  .pill { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 10px; margin-left: 8px;
+    background: var(--secondary-background-color); color: var(--secondary-text-color); vertical-align: 2px; }
+  .toggle { font-size: 13px; color: var(--secondary-text-color); display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .plan-tiles { margin: 12px 0 4px; }
+  .act { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+    font-size: 12px; margin-right: 8px; vertical-align: 3px; color: #fff; background: var(--secondary-text-color); }
+  .act.heat { background: #e34948; }
+  .act.cool { background: #2a78d6; }
 `;
 
 customElements.define("thermal-mpc-panel", ThermalMpcPanel);

@@ -100,14 +100,44 @@ rolling window follows seasonal drift.
 `thermal_mpc.export_dataset` writes the training set and model to
 `thermal_mpc_dataset.yaml` in the config folder for offline analysis.
 
+## Shadow-mode planner
+
+Every 15 minutes the integration plans heating and cooling duty for each hour
+of the next 24 h. It uses the model, the hourly weather forecast, and a solar
+forecast from any provider the Energy dashboard can use (e.g. Forecast.Solar).
+Without forecasts it repeats yesterday. The model is linear, so each room's
+path is the free-running forecast plus a response matrix times the duties.
+The planner minimises:
+
+* time outside the comfort band (target ± band; the target defaults to the
+  thermostat's setpoint),
+* spread between rooms,
+* energy, with cooling priced lower while the sun covers the AC.
+
+Tune the trade-offs in the integration's options (Planner page).
+
+**Nothing is sent to the thermostat.** The plan is published as:
+
+| Entity | Meaning |
+|---|---|
+| `sensor.thermal_model_recommended_action` | heat / cool / idle for this hour, plus whether the thermostat is doing the same thing |
+| `sensor.thermal_model_recommended_setpoint` | setpoint that would make the thermostat follow the plan now (its reading ±1 K) |
+| `sensor.thermal_model_planned_heating_24_h` | hours of full-duty heating planned |
+
+The panel's **Next 24 hours** card shows planned room temperatures against
+the comfort band, the hourly duty, and the outdoor forecast.
+
 ## Roadmap
 
 1. ✅ Data collection and thermal model with validation
-2. ⏳ Forecast-driven prediction sensors (next 12–24 h per room)
-3. ⏳ Shadow-mode MPC: log what it *would* do with setpoint offset, fan and HRV
-4. ⏳ Closed loop with watchdog. It uses small setpoint offsets (±1–1.5 K),
-   never +30/+15, so a two-stage furnace stays on low stage and the house is
-   safe if the controller stops.
+2. ✅ Thermal mass, forecast-driven prediction
+3. ✅ Shadow-mode MPC. Compare its recommendations with the thermostat for a
+   week or two.
+4. ⏳ Closed loop: drive the setpoint with small offsets (±1–1.5 K, never
+   +30/+15), with a watchdog that restores a safe setpoint if the
+   integration stops.
+5. ⏳ Fan circulation and HRV as planned actions (fan mixing needs a
+   state-dependent term, not a constant gain).
 
 A single-zone forced-air system cannot heat one room without heating the
 others. The controller can narrow the spread between rooms through timing and
