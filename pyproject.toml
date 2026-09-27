@@ -1,31 +1,5 @@
-[build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "ha-thermal-mpc"
-version = "0.1.0"
-description = "Grey-box multi-room thermal model and MPC for Home Assistant"
-requires-python = ">=3.11"
-dependencies = [
-  "numpy>=1.26",
-  "pandas>=2.1",
-  "scipy>=1.11",
-  "pyyaml>=6",
-  "requests>=2.31",
-]
-
-[project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5"]
-
-[project.scripts]
-thermal-mpc = "thermal_mpc.cli:main"
-
-[tool.setuptools]
-packages = ["thermal_mpc"]
-
 [tool.ruff]
-target-version = "py311"
+target-version = "py313"
 line-length = 88
 
 [tool.ruff.lint]
@@ -33,7 +7,9 @@ select = ["E", "W", "F", "I", "N", "D", "UP", "B", "SIM", "RET", "C4", "PTH"]
 ignore = ["D203", "D213", "N803", "N806"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["D100", "D103"]
+"tests/*" = ["D100", "D103", "D104"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

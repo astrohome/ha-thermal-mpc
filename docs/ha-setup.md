@@ -1,41 +1,37 @@
 # Home Assistant setup
 
-## 1. Keep more history (urgent)
+## 1. Recorder retention
 
-The recorder purges raw states after 10 days by default, and the model needs
-weeks of 5-minute data. In `configuration.yaml`, merging with any existing
-`recorder:` block:
+The integration backfills from the recorder on first start, so a longer
+retention (already set to 60 days here) gives it more to learn from right
+away:
 
 ```yaml
 recorder:
   purge_keep_days: 60
 ```
 
-The database grows by roughly tens of MB per week on a typical install. If
-that is a concern, add `include:` or `exclude:` filters. In the meantime, run
-`thermal-mpc export --days 10 --append` daily (cron, or an HA
-`shell_command`) so nothing is lost: the CSV accumulates beyond the purge
-window.
+After setup the integration keeps its own 5-minute copy in `.storage` for
+120 days, so retention only matters for the initial backfill.
 
-## 2. What the default config uses
+## 2. Suggested setup for this house
 
-| Column | Entity | Notes |
+| Field | Entity | Notes |
 |---|---|---|
-| `T_living_room` | `sensor.timmerflotte_temp_hmd_sensor_temperature` | |
-| `T_bedroom` | `sensor.timmerflotte_temp_hmd_sensor_temperature_2` | |
-| `T_thermostat` | `sensor.aprilaire_indoor_temperature_controlling_sensor` | 0.5 K steps |
-| `T_primary_bedroom` | `sensor.kaa_temperature` | plant sensor |
-| `T_office` | `sensor.office_plant_temperature` | plant sensor |
-| `T_out` | `weather.forecast_home` → `temperature` | met.no, not measured |
-| `heating` / `cooling` | `climate.aprilaire_thermostat` → `hvac_action` | duty cycle |
-| `solar_kw` | `sensor.vue2_solar_power` | real-time PV as irradiance proxy |
-| `fan` | `sensor.aprilaire_fan_status` | |
-| `ventilation` | `sensor.aprilaire_ventilation_status` | HRV |
+| Rooms | `sensor.timmerflotte_temp_hmd_sensor_temperature` (living) | |
+| | `sensor.timmerflotte_temp_hmd_sensor_temperature_2` (bedroom) | |
+| | `sensor.aprilaire_indoor_temperature_controlling_sensor` | 0.5 K steps, coarse |
+| | `sensor.kaa_temperature` (primary bedroom) | plant sensor |
+| | `sensor.office_plant_temperature` (office) | plant sensor |
+| Outdoor | `weather.forecast_home` | met.no, not measured |
+| Thermostat | `climate.aprilaire_thermostat` | |
+| Solar power | `sensor.vue2_solar_power` | real-time, W |
+| Fan | `sensor.aprilaire_fan_status` | |
+| Ventilation | `sensor.aprilaire_ventilation_status` | HRV |
 
-Also available for later use (energy cost term, heat-delivery calibration):
-`sensor.vue2_furnance_power`, `sensor.vue2_ac_power`,
-`sensor.meter_gas_meter_gas_consumption`, the Growatt per-string power
-(useful if the strings face different directions), and
+Useful later for the energy-cost term: `sensor.vue2_furnance_power`,
+`sensor.vue2_ac_power`, `sensor.meter_gas_meter_gas_consumption`, the Growatt
+per-string power (useful if the strings face different directions), and
 `sensor.power_production_now` (Forecast.Solar).
 
 ## 3. Gaps worth closing, in order of value

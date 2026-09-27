@@ -1,0 +1,22 @@
+{
+  "domain": "thermal_mpc",
+  "name": "Thermal MPC",
+  "after_dependencies": [
+    "weather"
+  ],
+  "codeowners": [
+    "@astrohome"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "recorder"
+  ],
+  "documentation": "https://github.com/astrohome/ha-thermal-mpc",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/astrohome/ha-thermal-mpc/issues",
+  "requirements": [
+    "numpy>=1.26.0"
+  ],
+  "version": "0.2.0"
+}
