@@ -42,7 +42,7 @@ from .const import (
     VALIDATION_HORIZON_H,
 )
 from .core.dataset import Dataset
-from .core.insight import budget, mean_budget, replay
+from .core.insight import budget, mean_budget, observed_mass, replay
 from .core.model import (
     FREE,
     NEGATIVE,
@@ -106,6 +106,8 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             rooms=self.rooms,
             outdoor=self.outdoor,
             inputs={k: c.sign for k, c in self.columns.items() if c.sign},
+            # Sun lands on floors and walls: let it heat the thermal mass too.
+            mass_inputs=tuple(k for k in self.columns if k.startswith("solar_kw:")),
         )
         self.dataset = Dataset(step=float(STEP_SECONDS))
         self.result = FitResult()
@@ -356,6 +358,8 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
                     "entity_id": self.columns[room].signal.entity_id,
                     "temperature": _json_num(live.get(room)),
                     "tau_out_h": params.tau_out_h if params else None,
+                    "tau_mass_h": params.tau_mass_h if params else None,
+                    "mass_h": params.mass_h if params else None,
                     "one_step_rmse": params.rmse_one_step if params else None,
                     "coupling_h": {
                         o: 1 / g for o, g in params.g_rooms.items() if g > 1e-6
@@ -413,8 +417,14 @@ def _insight(
     temps = {r: live.get(r, float("nan")) for r in model.rooms}
     inputs = {i: live.get(i, float("nan")) for i in model.inputs}
     day = round(24 / model.step_h)
+    mass_now = {}
+    if ds.rows:
+        last = observed_mass(model, ds)[-1]
+        mass_now = {r: float(last[k]) for k, r in enumerate(model.rooms)}
     return {
-        "budget_now": budget(model, temps, live.get(model.outdoor, np.nan), inputs),
+        "budget_now": budget(
+            model, temps, live.get(model.outdoor, np.nan), inputs, mass_now
+        ),
         "budget_24h": mean_budget(model, ds, slice(max(0, ds.rows - day), ds.rows)),
         "replay": replay(model, ds),
     }

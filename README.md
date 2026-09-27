@@ -65,11 +65,16 @@ The integration adds a **Thermal model** entry to the sidebar. It shows:
 For each room *i* (coefficients divided by the room's heat capacity):
 
 ```
-dT_i/dt = Σ_j g_ij (T_j − T_i) + g_io (T_out − T_i) + Σ_u b_iu · u + c_i
+dT_i/dt = Σ_j g_ij (T_j − T_i) + g_io (T_out − T_i) + h_i (M_i − T_i) + Σ_u b_iu · u + c_i
+dM_i/dt = k_i (T_i − M_i) + s_i · solar
 ```
 
 * `g_io`: conductance to outdoors. `1/g_io` is the time constant.
 * `g_ij`: coupling between rooms (walls, open doors, stairwells).
+* `M_i`: optional hidden **thermal mass** (walls, floor, furniture). It
+  stores heat, including sun landing on the floor, and gives it back slowly.
+  It isn't measured; it's reconstructed from the room's air temperature and
+  solar power. `1/k_i` is how fast it follows the air.
 * `u`: inputs time-averaged over each 5-minute step, i.e. heating/cooling
   duty cycle, PV power, fan and HRV duty.
 * `c_i`: constant internal gains or sensor bias.
@@ -80,6 +85,9 @@ Fitting runs in two stages, in plain numpy:
    summed regressors, with signs constrained (conductances ≥ 0, heating ≥ 0,
    cooling ≤ 0). Regressing noisy 5-minute differences instead biases slow
    rooms to "no heat loss at all".
+   The thermal-mass time constant is picked from a grid (2–32 h, or none) by
+   open-loop error. With it fixed, the mass is a filtered copy of measured
+   signals, so the air equation stays linear.
 2. **Multi-step refinement.** Projected Levenberg-Marquardt minimises the
    6 h open-loop prediction error over overlapping segments, the error that
    matters for planning.

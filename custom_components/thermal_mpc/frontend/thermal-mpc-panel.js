@@ -352,7 +352,7 @@ class ThermalMpcPanel extends HTMLElement {
       const p = pos[r.id];
       const b = this._budget(e, r.id);
       const dev = r.temperature != null && mean != null ? r.temperature - mean : null;
-      const inputs = Object.entries(b?.inputs || {})
+      const inputs = Object.entries({ ...(b?.inputs || {}), ...(b?.mass != null ? { __mass: b.mass } : {}) })
         .filter(([, v]) => v != null && Math.abs(v) >= 0.005)
         .sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]))
         .slice(0, 2);
@@ -368,7 +368,7 @@ class ThermalMpcPanel extends HTMLElement {
           <text class="sub" x="${p.x + 14}" y="${p.y + 86}">${tau} · net ${signed(net)} K/h</text>
           ${inputs.map(([k, v], i) => `
             <circle cx="${p.x + 18}" cy="${p.y + 104 + i * 16 - 4}" r="4" fill="${v >= 0 ? pal.gain : pal.loss}"/>
-            <text class="sub" x="${p.x + 28}" y="${p.y + 104 + i * 16}">${esc(e.labels[k] || k)} ${signed(v)} K/h</text>`).join("")}
+            <text class="sub" x="${p.x + 28}" y="${p.y + 104 + i * 16}">${esc(k === "__mass" ? "Thermal mass" : e.labels[k] || k)} ${signed(v)} K/h</text>`).join("")}
         </g>`;
     }).join("");
 
@@ -409,13 +409,14 @@ class ThermalMpcPanel extends HTMLElement {
     };
     if (b) {
       rows.push(["Outdoor", b.outdoor]);
+      add("Thermal mass (walls, floor)", b.mass);
       for (const [k, v] of Object.entries(b.rooms || {})) add(e.labels[k] || k, v);
       for (const [k, v] of Object.entries(b.inputs || {})) add(e.labels[k] || k, v);
       add("Baseline (unexplained)", b.offset);
     }
     const src = this._mode === "now" ? e.budget_now : e.budget_24h;
     const allMags = Object.values(src || {}).flatMap((x) => [
-      x.outdoor, x.offset, x.net, ...Object.values(x.rooms || {}), ...Object.values(x.inputs || {}),
+      x.outdoor, x.mass, x.offset, x.net, ...Object.values(x.rooms || {}), ...Object.values(x.inputs || {}),
     ]).filter((v) => v != null).map(Math.abs);
     const scale = Math.max(0.05, ...allMags);
 
@@ -459,6 +460,7 @@ class ThermalMpcPanel extends HTMLElement {
         ${hidden ? `<div class="muted small">${hidden} term${hidden > 1 ? "s" : ""} below 0.005 K/h not shown</div>` : ""}
         <dl class="facts">
           <div><dt>Time constant to outdoor</dt><dd>${r.tau_out_h != null ? `${fmt(r.tau_out_h, 1)} h` : "not identified yet"}</dd></div>
+          <div><dt>Thermal mass responds in</dt><dd>${r.tau_mass_h != null ? `${fmt(r.tau_mass_h, 1)} h` : "no mass effect found"}</dd></div>
           ${Object.entries(r.coupling_h || {}).map(([k, h]) => `<div><dt>Coupling to ${esc(e.labels[k] || k)}</dt><dd>${fmt(h, 1)} h</dd></div>`).join("")}
           <div><dt>Prediction error 1 / 3 / 6 h</dt><dd>${fmt(v["1h"])} / ${fmt(v["3h"])} / ${fmt(v["6h"])} K</dd></div>
         </dl>

@@ -3,17 +3,20 @@
 Each room ``i`` is a lumped heat capacity connected to its neighbours and to
 the outdoors through thermal conductances::
 
-    dT_i/dt = sum_j g_ij (T_j - T_i) + g_io (T_out - T_i) + sum_u b_iu u + c_i
+    dT_i/dt = sum_j g_ij (T_j - T_i) + g_io (T_out - T_i) + h_i (M_i - T_i)
+              + sum_u b_iu u + c_i
+    dM_i/dt = k_i (T_i - M_i)
+
+``M_i`` is an optional hidden thermal-mass temperature (walls, floor,
+furniture) that stores heat and gives it back slowly; see :mod:`.identify`.
 
 Every coefficient is already divided by the room's heat capacity, so
 conductances are in 1/h and gains in K/h per unit of input. ``1 / g_io`` is
 the room's time constant against the outdoors, a direct measure of thermal
 inertia. ``c_i`` absorbs constant internal gains and sensor offsets.
 
-The equation is linear in its parameters, so with a forward-Euler
-discretisation each room is fitted independently by sign-constrained least
-squares. The signs encode physics: conductances and heating gains are
-non-negative, cooling gains are non-positive.
+Signs encode physics: conductances and heating gains are non-negative,
+cooling gains are non-positive.
 """
 
 from __future__ import annotations
@@ -25,7 +28,15 @@ from typing import Any
 import numpy as np
 
 from .dataset import Dataset
-from .identify import Layout, integral_fit, refine
+from .identify import (
+    MASS_TAU_GRID_H,
+    Layout,
+    Segments,
+    integral_fit,
+    observe_mass,
+    open_loop_error,
+    refine,
+)
 from .lsq import FREE, NEGATIVE, POSITIVE, nnls, signed_lstsq
 
 __all__ = [
@@ -58,6 +69,7 @@ class ModelSpec:
     outdoor: str
     inputs: dict[str, str]  # column -> sign
     couplings: list[tuple[str, str]] | None = None  # None = every pair
+    mass_inputs: tuple[str, ...] = ()  # inputs that also heat mass (sun)
 
     def neighbours(self) -> dict[str, list[str]]:
         """Adjacency list of room couplings."""
@@ -83,11 +95,19 @@ class RoomParams:
     offset: float
     rmse_one_step: float
     n_samples: int
+    mass_h: float = 0.0  # air <- mass coupling (1/h); 0 = no mass node
+    mass_k: float = 0.0  # mass <- air rate (1/h)
+    mass_gains: dict[str, float] = field(default_factory=dict)  # K/h per unit
 
     @property
     def tau_out_h(self) -> float | None:
         """Time constant against outdoors in hours (None if uncoupled)."""
         return 1.0 / self.g_out if self.g_out > 1e-9 else None
+
+    @property
+    def tau_mass_h(self) -> float | None:
+        """How fast the thermal mass follows the air, in hours."""
+        return 1.0 / self.mass_k if self.mass_h > 1e-9 and self.mass_k > 0 else None
 
 
 @dataclass
@@ -100,14 +120,22 @@ class ThermalModel:
     inputs: list[str]
     unused_inputs: list[str] = field(default_factory=list)
 
-    def derivative(self, temps: np.ndarray, t_out: float, u: np.ndarray) -> np.ndarray:
-        """Return dT/dt (K/h) for all rooms."""
+    def derivative(
+        self,
+        temps: np.ndarray,
+        t_out: float,
+        u: np.ndarray,
+        mass: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Return air dT/dt (K/h) for all rooms (``mass`` defaults to ``temps``)."""
         names = list(self.rooms)
         idx = {n: k for k, n in enumerate(names)}
+        mass = temps if mass is None else mass
         d = np.empty(len(names))
         for k, name in enumerate(names):
             p = self.rooms[name]
             val = p.g_out * (t_out - temps[k]) + p.offset
+            val += p.mass_h * (mass[k] - temps[k])
             for other, g in p.g_rooms.items():
                 val += g * (temps[idx[other]] - temps[k])
             for j, inp in enumerate(self.inputs):
@@ -115,12 +143,62 @@ class ThermalModel:
             d[k] = val
         return d
 
-    def simulate(self, t0: np.ndarray, t_out: np.ndarray, u: np.ndarray) -> np.ndarray:
-        """Roll forward from ``t0``; returns shape (N + 1, n_rooms)."""
+    @property
+    def mass_k(self) -> np.ndarray:
+        """Mass rates per room (0 where there is no mass node)."""
+        return np.array(
+            [p.mass_k if p.mass_h > 1e-9 else 0.0 for p in self.rooms.values()]
+        )
+
+    @property
+    def mass_inputs(self) -> list[str]:
+        """Inputs that heat the thermal mass directly."""
+        names = {q for p in self.rooms.values() for q in p.mass_gains}
+        return [i for i in self.inputs if i in names]
+
+    def _mass_gain_matrix(self) -> np.ndarray:
+        return np.array(
+            [
+                [p.mass_gains.get(q, 0.0) for q in self.mass_inputs]
+                for p in self.rooms.values()
+            ]
+        ).reshape(len(self.rooms), len(self.mass_inputs))
+
+    def observe_mass(
+        self, temps: np.ndarray, u: np.ndarray | None = None
+    ) -> np.ndarray:
+        """Hidden mass temperatures implied by measured signals (n, R).
+
+        ``u`` holds the model inputs (columns in ``self.inputs`` order).
+        """
+        qi = [self.inputs.index(q) for q in self.mass_inputs]
+        u_mass = u[:, qi] if u is not None and qi else None
+        return observe_mass(
+            temps, self.mass_k, self.step_h, u_mass, self._mass_gain_matrix()
+        )
+
+    def simulate(
+        self,
+        t0: np.ndarray,
+        t_out: np.ndarray,
+        u: np.ndarray,
+        m0: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Roll forward from air ``t0`` (and mass ``m0``, default ``t0``).
+
+        Returns air temperatures, shape (N + 1, n_rooms).
+        """
+        k = self.mass_k
+        S = self._mass_gain_matrix()
+        qi = [self.inputs.index(q) for q in self.mass_inputs]
         out = np.empty((len(t_out) + 1, len(t0)))
         out[0] = t0
-        for k in range(len(t_out)):
-            out[k + 1] = out[k] + self.step_h * self.derivative(out[k], t_out[k], u[k])
+        m = np.array(t0 if m0 is None else m0, dtype=float)
+        for s in range(len(t_out)):
+            x = out[s]
+            out[s + 1] = x + self.step_h * self.derivative(x, t_out[s], u[s], m)
+            drive = S @ u[s][qi] if qi else 0.0
+            m = m + self.step_h * (k * (x - m) + drive)
         return out
 
     def to_dict(self) -> dict[str, Any]:
@@ -151,12 +229,15 @@ def fit(
     rows: slice | None = None,
     window_h: float = 1.0,
     horizon_h: float | None = 6.0,
+    mass_grid_h: tuple[float | None, ...] = MASS_TAU_GRID_H,
 ) -> ThermalModel:
     """Fit all rooms on ``ds`` (optionally only ``rows`` of it).
 
     Stage 1 regresses ``window_h``-hour temperature changes (see
     :mod:`.identify`); stage 2 refines on ``horizon_h``-hour open-loop
-    prediction error. ``horizon_h=None`` skips stage 2.
+    prediction error. ``horizon_h=None`` skips stage 2. ``mass_grid_h``
+    lists the thermal-mass time constants to try (``None`` = no mass node);
+    pass ``(None,)`` for a plain one-node-per-room model.
     """
     step_h = ds.step / 3600.0
     sl = rows or slice(None)
@@ -180,34 +261,70 @@ def fit(
     u = np.column_stack([col[i] for i in inputs]) if inputs else np.zeros((n, 0))
 
     window = max(1, round(window_h / step_h))
-    theta, used = integral_fit(temps, t_out, u, layout, step_h, window)
-    for (room, a, b), n_used in zip(layout.blocks(), used, strict=True):
-        if n_used < SAMPLES_PER_PARAM * (b - a):
-            raise NotEnoughDataError(
-                f"{room}: {n_used} complete windows for {b - a} parameters"
-            )
+    horizon = max(1, round((horizon_h or 6.0) / step_h))
+    # About one segment per hour, capped so a long history stays fast.
+    stride = max(round(1 / step_h), n // 1500)
+    seg = Segments.build(temps, t_out, u, horizon, stride)
+
+    # Stage 1 for each candidate mass time constant (same for every room).
+    # Refine the two that predict the training data best open loop, keep the
+    # better one.
+    candidates = []
+    for tau in mass_grid_h:
+        cand = Layout(
+            spec.rooms,
+            nbrs,
+            inputs,
+            dict(spec.inputs),
+            [tau is not None] * len(spec.rooms),
+            [q for q in spec.mass_inputs if q in inputs],
+        )
+        k = np.full(len(spec.rooms), 0.0 if tau is None else 1.0 / tau)
+        theta, used = integral_fit(temps, t_out, u, cand, step_h, window, k)
+        for (room, a, b), n_used in zip(cand.blocks(), used, strict=True):
+            n_par = b - a - (0 if tau is not None else 1 + len(cand.mass_inputs))
+            if n_used < SAMPLES_PER_PARAM * n_par:
+                raise NotEnoughDataError(
+                    f"{room}: {n_used} complete windows for {n_par} parameters"
+                )
+        err = (
+            open_loop_error(theta, cand, temps, u, seg, step_h)
+            if seg.starts.size
+            else 0.0
+        )
+        candidates.append((err, theta, cand, used))
+    candidates.sort(key=lambda c: c[0])
     if horizon_h:
-        horizon = max(1, round(horizon_h / step_h))
-        # About one segment per hour, capped so a long history stays fast.
-        stride = max(round(1 / step_h), n // 1500)
-        theta, _ = refine(theta, layout, temps, t_out, u, step_h, horizon, stride)
+        refined = []
+        for _, theta, cand, used in candidates[:2]:
+            theta, err = refine(theta, cand, temps, t_out, u, step_h, horizon, stride)
+            refined.append((err if np.isfinite(err) else np.inf, theta, cand, used))
+        candidates = sorted(refined, key=lambda c: c[0])
+    _, theta, layout, used = candidates[0]
 
     # One-step residuals of the final model, for reference.
-    A, g_out, G, c = layout.matrices(theta)
+    A, g_out, G, c, h, kk, Sm = layout.matrices(theta)
+    u_mass = u[:, layout.mass_input_idx] if layout.mass_inputs else None
+    mass = observe_mass(temps, kk, step_h, u_mass, Sm)
     pred = temps[:-1] + step_h * (
-        temps[:-1] @ A.T + t_out[:-1, None] * g_out + u[:-1] @ G.T + c
+        temps[:-1] @ A.T + t_out[:-1, None] * g_out + h * mass[:-1] + u[:-1] @ G.T + c
     )
     resid = pred - temps[1:]
     rooms = {}
     for k, (room, a, _) in enumerate(layout.blocks()):
         ok = ~np.isnan(resid[:, k])
         nb = nbrs[room]
-        b = a + 1 + len(nb)
+        b = a + 1 + len(nb) + 1 + len(layout.mass_inputs)  # skip mass params
         rooms[room] = RoomParams(
             g_out=float(theta[a]),
             g_rooms={o: float(theta[a + 1 + j]) for j, o in enumerate(nb)},
             gains={i: float(theta[b + j]) for j, i in enumerate(inputs)},
             offset=float(theta[b + len(inputs)]),
+            mass_h=float(h[k]),
+            mass_k=float(kk[k]),
+            mass_gains={q: float(Sm[k, j]) for j, q in enumerate(layout.mass_inputs)}
+            if h[k] > 1e-9
+            else {},
             rmse_one_step=float(np.sqrt(np.mean(resid[ok, k] ** 2)))
             if ok.any()
             else 0.0,
@@ -234,18 +351,23 @@ def validate(
     From every ``every_h`` start point where all rooms are known, simulate
     ``horizon_h`` ahead with the measured outdoor temperature and inputs and
     compare with measurements. This is the figure that matters for control:
-    a good one-step fit can still drift badly over hours.
+    a good one-step fit can still drift badly over hours. Hidden mass states
+    are reconstructed from the *whole* dataset, so ``rows`` late in the data
+    start from a settled estimate.
     """
     sl = rows or slice(None)
     names = list(model.rooms)
-    temps = np.column_stack([ds.columns[r][sl] for r in names])
+    all_temps = np.column_stack([ds.columns[r] for r in names])
+    all_u = (
+        np.column_stack([ds.columns[i] for i in model.inputs])
+        if model.inputs
+        else np.zeros((ds.rows, 0))
+    )
+    mass = model.observe_mass(all_temps, all_u)[sl]
+    temps = all_temps[sl]
+    u = all_u[sl]
     t_out = ds.columns[model.outdoor][sl]
     n = len(t_out)
-    u = (
-        np.column_stack([ds.columns[i][sl] for i in model.inputs])
-        if model.inputs
-        else np.zeros((n, 0))
-    )
     n_h = max(1, round(horizon_h / model.step_h))
     stride = max(1, round(every_h / model.step_h))
     sq = np.zeros((n_h, len(names)))
@@ -256,7 +378,8 @@ def validate(
         w_out, w_u = t_out[s : s + n_h], u[s : s + n_h]
         if np.isnan(w_out).any() or np.isnan(w_u).any():
             continue
-        err = model.simulate(temps[s], w_out, w_u)[1:] - temps[s + 1 : s + 1 + n_h]
+        sim = model.simulate(temps[s], w_out, w_u, mass[s])
+        err = sim[1:] - temps[s + 1 : s + 1 + n_h]
         ok = ~np.isnan(err)
         sq[ok] += err[ok] ** 2
         cnt += ok

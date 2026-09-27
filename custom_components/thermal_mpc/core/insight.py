@@ -11,6 +11,18 @@ from .model import ThermalModel
 
 OUTDOOR = "outdoor"
 OFFSET = "offset"
+MASS = "mass"
+
+
+def observed_mass(model: ThermalModel, ds: Dataset) -> np.ndarray:
+    """Hidden mass temperatures over the whole dataset, shape (rows, rooms)."""
+    temps = np.column_stack([ds.columns[r] for r in model.rooms])
+    u = (
+        np.column_stack([ds.columns[i] for i in model.inputs])
+        if model.inputs
+        else np.zeros((ds.rows, 0))
+    )
+    return model.observe_mass(temps, u)
 
 
 def budget(
@@ -18,23 +30,28 @@ def budget(
     temps: dict[str, float],
     t_out: float,
     inputs: dict[str, float],
+    mass: dict[str, float] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Split each room's dT/dt (K/h) into the paths that cause it.
 
-    Returns ``{room: {"outdoor": x, "rooms": {other: x}, "inputs": {name: x},
-    "offset": x, "net": x}}``. Positive terms warm the room, negative cool it.
-    Terms whose driving value is unknown (NaN) come out as None.
+    Returns ``{room: {"outdoor": x, "mass": x, "rooms": {other: x},
+    "inputs": {name: x}, "offset": x, "net": x}}``. Positive terms warm the
+    room, negative cool it; ``mass`` is heat stored in or released by walls
+    and furniture. Terms whose driving value is unknown come out as None.
     """
     out: dict[str, dict[str, Any]] = {}
     for room, p in model.rooms.items():
         t_i = temps.get(room, np.nan)
         terms_out = p.g_out * (t_out - t_i)
+        m_i = (mass or {}).get(room, t_i)
+        terms_mass = p.mass_h * (m_i - t_i) if p.mass_h > 0 else 0.0
         rooms = {o: g * (temps.get(o, np.nan) - t_i) for o, g in p.g_rooms.items()}
         ins = {i: p.gains.get(i, 0.0) * inputs.get(i, np.nan) for i in model.inputs}
-        values = [terms_out, *rooms.values(), *ins.values(), p.offset]
+        values = [terms_out, terms_mass, *rooms.values(), *ins.values(), p.offset]
         known = [v for v in values if not np.isnan(v)]
         out[room] = {
             OUTDOOR: _num(terms_out),
+            MASS: _num(terms_mass),
             "rooms": {k: _num(v) for k, v in rooms.items()},
             "inputs": {k: _num(v) for k, v in ins.items()},
             OFFSET: _num(p.offset),
@@ -54,15 +71,19 @@ def mean_budget(
     if not ok.any():
         return {}
     mean = {k: v[ok] for k, v in cols.items()}
+    mass_all = observed_mass(model, ds)[rows][ok]
     out: dict[str, dict[str, Any]] = {}
-    for room, p in model.rooms.items():
+    for k, (room, p) in enumerate(model.rooms.items()):
         t_i = mean[room]
         terms_out = float(np.mean(p.g_out * (mean[model.outdoor] - t_i)))
+        terms_mass = float(np.mean(p.mass_h * (mass_all[:, k] - t_i)))
         rooms = {o: float(np.mean(g * (mean[o] - t_i))) for o, g in p.g_rooms.items()}
         ins = {i: float(np.mean(p.gains.get(i, 0.0) * mean[i])) for i in model.inputs}
-        net = terms_out + sum(rooms.values()) + sum(ins.values()) + p.offset
+        net = terms_out + terms_mass + sum(rooms.values()) + sum(ins.values())
+        net += p.offset
         out[room] = {
             OUTDOOR: terms_out,
+            MASS: terms_mass,
             "rooms": rooms,
             "inputs": ins,
             OFFSET: p.offset,
@@ -94,6 +115,7 @@ def replay(
         if model.inputs
         else np.zeros((n, 0))
     )
+    mass = observed_mass(model, ds)[sl]
     pred = np.full_like(temps, np.nan)
     seg = max(1, round(segment_h / model.step_h))
     for s in range(0, n, seg):
@@ -105,7 +127,7 @@ def replay(
         stop = s + (int(np.argmax(bad)) if bad.any() else e - s)
         if stop - s < 1:
             continue
-        sim = model.simulate(temps[s], t_out[s:stop], u[s:stop])
+        sim = model.simulate(temps[s], t_out[s:stop], u[s:stop], mass[s])
         pred[s:stop] = sim[:-1]
     start = ds.start + (ds.rows - n) * ds.step
     return {

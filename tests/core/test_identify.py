@@ -2,7 +2,12 @@ import numpy as np
 import pytest
 
 from custom_components.thermal_mpc.core.dataset import Dataset
-from custom_components.thermal_mpc.core.identify import Layout, simulate_batch
+from custom_components.thermal_mpc.core.identify import (
+    Layout,
+    _lowpass,
+    observe_mass,
+    simulate_batch,
+)
 from custom_components.thermal_mpc.core.model import ModelSpec, fit, validate
 
 SPEC = ModelSpec(
@@ -66,16 +71,89 @@ def test_noisy_sensors_do_not_collapse_time_constants(seed):
 
 def test_batch_simulation_matches_reference():
     ds = noisy_house(0, days=4)
-    model = fit(ds, SPEC, horizon_h=None)
-    layout = Layout(SPEC.rooms, SPEC.neighbours(), model.inputs, dict(SPEC.inputs))
+    model = fit(ds, SPEC, horizon_h=None, mass_grid_h=(None,))
+    nbrs = SPEC.neighbours()
+    layout = Layout(SPEC.rooms, nbrs, model.inputs, dict(SPEC.inputs))
     theta = []
     for r in SPEC.rooms:
         p = model.rooms[r]
-        theta += [p.g_out, *[p.g_rooms[o] for o in SPEC.neighbours()[r]]]
+        theta += [p.g_out, *[p.g_rooms[o] for o in nbrs[r]], 0.0]
         theta += [p.gains[i] for i in model.inputs] + [p.offset]
+    theta += [0.0] * len(SPEC.rooms)  # mass rates
     x0 = np.array([[21.0, 20.0, 19.0]])
     t_out = ds.columns["out"][None, :50]
     u = np.stack([ds.columns[i][:50] for i in model.inputs], axis=-1)[None]
     batch = simulate_batch(np.array(theta), layout, x0, t_out, u, model.step_h)
     ref = model.simulate(x0[0], t_out[0], u[0])[1:]
     assert batch[0] == pytest.approx(ref)
+
+
+MASS_SPEC = ModelSpec(
+    rooms=["a", "b"],
+    outdoor="out",
+    inputs={"heat": "positive", "solar": "positive"},
+    mass_inputs=("solar",),
+)
+
+
+def two_node_house(seed: int, days: int = 14) -> Dataset:
+    """Air + thermal mass per room; heating warms air, sun warms the mass."""
+    rng = np.random.default_rng(seed)
+    n = days * 288
+    h = np.arange(n) / 12
+    t_out = 8 + 7 * np.sin(2 * np.pi * (h - 9) / 24)
+    cloud = rng.uniform(0.2, 1, days + 1).repeat(288)[:n]
+    solar = np.clip(3 * np.sin(2 * np.pi * (h % 24 - 6) / 24), 0, None) * cloud
+    air = np.empty((n, 2))
+    mass = np.empty((n, 2))
+    air[0] = mass[0] = [21, 20]
+    heat = np.zeros(n)
+    for k in range(n - 1):
+        prev = heat[k - 1] if k else 0.0
+        heat[k] = 1.0 if air[k, 0] < 20.5 else (0.0 if air[k, 0] > 21.3 else prev)
+        swap = np.array([air[k, 1] - air[k, 0], air[k, 0] - air[k, 1]])
+        da = (mass[k] - air[k]) / 1.5 + (t_out[k] - air[k]) / 40 + 0.1 * swap
+        da += np.array([3.0, 2.0]) * heat[k]
+        dm = (air[k] - mass[k]) / 8 + np.array([0.4, 0.1]) * solar[k]
+        air[k + 1] = air[k] + da / 12
+        mass[k + 1] = mass[k] + dm / 12
+    ds = Dataset(step=300.0)
+    ds.append(
+        0.0,
+        {
+            "a": air[:, 0] + rng.normal(0, 0.03, n),
+            "b": air[:, 1] + rng.normal(0, 0.03, n),
+            "out": t_out,
+            "heat": heat,
+            "solar": solar,
+        },
+    )
+    return ds
+
+
+def test_thermal_mass_is_found_and_helps():
+    ds = two_node_house(0)
+    split = int(ds.rows * 0.8)
+    rows = slice(0, split)
+    with_mass = fit(ds, MASS_SPEC, rows)
+    without = fit(ds, MASS_SPEC, rows, mass_grid_h=(None,))
+    assert any(p.tau_mass_h for p in with_mass.rooms.values())
+    assert with_mass.rooms["a"].mass_gains.get("solar", 0) > 0
+    err_with = max(c[-1] for c in validate(with_mass, ds, slice(split, None)).values())
+    err_without = max(c[-1] for c in validate(without, ds, slice(split, None)).values())
+    assert err_with < 0.75 * err_without
+
+
+def test_mass_decomposition_matches_observer():
+    """refine() uses M0 = F(T) + (s/k) F(u); it must equal observe_mass."""
+    rng = np.random.default_rng(1)
+    n = 500
+    temps = 20 + np.cumsum(rng.normal(0, 0.05, (n, 2)), axis=0)
+    solar = np.clip(rng.normal(1, 1, (n, 1)), 0, None)
+    k = np.array([0.125, 0.25])
+    S = np.array([[0.3], [0.1]])
+    full = observe_mass(temps, k, 1 / 12, solar, S)
+    base = observe_mass(temps, k, 1 / 12)
+    for j in range(2):
+        fu = _lowpass(solar[:, 0], k[j], 1 / 12)
+        assert full[:, j] == pytest.approx(base[:, j] + S[j, 0] / k[j] * fu)

@@ -188,6 +188,8 @@ class TimeConstantSensor(ThermalEntity, SensorEntity):
             "coupling_hours": {
                 label(k): _r(1 / v, 1) for k, v in p.g_rooms.items() if v > 1e-6
             },
+            "thermal_mass_hours": _r(p.tau_mass_h, 1),
+            "thermal_mass_coupling_per_h": _r(p.mass_h),
             "offset_k_per_h": _r(p.offset),
             "one_step_rmse_k": _r(p.rmse_one_step),
             "samples": p.n_samples,
