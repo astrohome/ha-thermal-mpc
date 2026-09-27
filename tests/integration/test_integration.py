@@ -44,7 +44,7 @@ async def test_config_flow(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_configure(result["flow_id"], OPTIONS)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["options"] == OPTIONS
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
 
 async def test_options_flow(hass: HomeAssistant) -> None:
@@ -53,13 +53,13 @@ async def test_options_flow(hass: HomeAssistant) -> None:
     )
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     new = {**OPTIONS, CONF_ROOMS: ["sensor.living"]}
     result = await hass.config_entries.options.async_configure(result["flow_id"], new)
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert entry.options[CONF_ROOMS] == ["sensor.living"]
     assert hass.states.get("sensor.thermal_model_bedroom_time_constant") is None
 
@@ -78,7 +78,7 @@ async def test_backfill_from_recorder(hass: HomeAssistant, freezer) -> None:
     hass.states.async_set("climate.thermostat", "heat", {"hvac_action": "idle"})
     hass.states.async_set("sensor.pv", "1500", {"unit_of_measurement": "W"})
     hass.states.async_set("sensor.hrv", "off")
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     freezer.move_to(start - timedelta(minutes=60))
     # Attribute-only change: must still be picked up.
@@ -156,7 +156,7 @@ async def test_fit_updates_sensors(hass: HomeAssistant) -> None:
     )
     await coordinator.async_fit()
     coordinator.async_update_listeners()
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     assert hass.states.get("sensor.thermal_model_model_status").state == "trained"
     tau = hass.states.get("sensor.thermal_model_living_time_constant")
@@ -169,5 +169,5 @@ async def test_fit_updates_sensors(hass: HomeAssistant) -> None:
     coordinator.async_schedule_save()
     await coordinator._store._async_handle_write_data()  # noqa: SLF001
     assert await hass.config_entries.async_reload(entry.entry_id)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert hass.states.get("sensor.thermal_model_model_status").state == "trained"

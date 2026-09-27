@@ -32,3 +32,6 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # Repo description/topics are GitHub settings, not files; set them
+          # in the repo's About panel and drop this line.
+          ignore: description topics
