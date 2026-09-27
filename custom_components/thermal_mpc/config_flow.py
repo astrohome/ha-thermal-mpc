@@ -11,23 +11,61 @@ from homeassistant.config_entries import (
     ConfigFlowResult,
     OptionsFlow,
 )
-from homeassistant.core import callback
-from homeassistant.helpers.selector import EntitySelector, EntitySelectorConfig
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+)
 
 from .const import (
+    CONF_BAND,
     CONF_CLIMATE,
+    CONF_ENERGY_WEIGHT,
     CONF_FAN,
     CONF_OUTDOOR,
     CONF_ROOMS,
     CONF_SOLAR,
+    CONF_SOLAR_FORECAST,
+    CONF_SPREAD_WEIGHT,
+    CONF_TARGET,
     CONF_VENTILATION,
+    CONF_WEATHER_FORECAST,
+    DEFAULT_BAND,
+    DEFAULT_ENERGY_WEIGHT,
+    DEFAULT_SPREAD_WEIGHT,
     DOMAIN,
 )
 
 ON_OFF_DOMAINS = ["sensor", "binary_sensor", "fan", "switch", "select"]
+PLANNER_KEYS = (CONF_TARGET, CONF_BAND, CONF_ENERGY_WEIGHT, CONF_SPREAD_WEIGHT)
 
-SCHEMA = vol.Schema(
-    {
+
+async def _solar_forecast_options(hass: HomeAssistant) -> list[SelectOptionDict]:
+    """Config entries of integrations that provide an energy solar forecast."""
+    try:
+        from homeassistant.components.energy.websocket_api import (  # noqa: PLC0415
+            async_get_energy_platforms,
+        )
+
+        platforms = await async_get_energy_platforms(hass)
+    except Exception:  # noqa: BLE001 - energy not set up: no forecast choice
+        return []
+    return [
+        SelectOptionDict(value=e.entry_id, label=e.title or e.domain)
+        for e in hass.config_entries.async_entries()
+        if e.domain in platforms
+    ]
+
+
+async def _entities_schema(hass: HomeAssistant) -> vol.Schema:
+    fields: dict[Any, Any] = {
         vol.Required(CONF_ROOMS): EntitySelector(
             EntitySelectorConfig(
                 domain="sensor", device_class="temperature", multiple=True
@@ -47,6 +85,38 @@ SCHEMA = vol.Schema(
         ),
         vol.Optional(CONF_VENTILATION): EntitySelector(
             EntitySelectorConfig(domain=ON_OFF_DOMAINS)
+        ),
+        vol.Optional(CONF_WEATHER_FORECAST): EntitySelector(
+            EntitySelectorConfig(domain="weather")
+        ),
+    }
+    if solar := await _solar_forecast_options(hass):
+        fields[vol.Optional(CONF_SOLAR_FORECAST)] = SelectSelector(
+            SelectSelectorConfig(options=solar, mode=SelectSelectorMode.DROPDOWN)
+        )
+    return vol.Schema(fields)
+
+
+def _number(
+    minimum: float, maximum: float, step: float, unit: str | None = None
+) -> NumberSelector:
+    config = NumberSelectorConfig(
+        min=minimum, max=maximum, step=step, mode=NumberSelectorMode.BOX
+    )
+    if unit:
+        config["unit_of_measurement"] = unit
+    return NumberSelector(config)
+
+
+PLANNER_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_TARGET): _number(10, 30, 0.5, "°C"),
+        vol.Required(CONF_BAND, default=DEFAULT_BAND): _number(0.1, 3, 0.1, "K"),
+        vol.Required(CONF_ENERGY_WEIGHT, default=DEFAULT_ENERGY_WEIGHT): _number(
+            0, 5, 0.05
+        ),
+        vol.Required(CONF_SPREAD_WEIGHT, default=DEFAULT_SPREAD_WEIGHT): _number(
+            0, 5, 0.05
         ),
     }
 )
@@ -81,7 +151,9 @@ class ThermalMpcConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
         return self.async_show_form(
             step_id="user",
-            data_schema=self.add_suggested_values_to_schema(SCHEMA, user_input),
+            data_schema=self.add_suggested_values_to_schema(
+                await _entities_schema(self.hass), user_input
+            ),
             errors=errors,
         )
 
@@ -93,21 +165,41 @@ class ThermalMpcConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class ThermalMpcOptionsFlow(OptionsFlow):
-    """Change the entities after setup (reloads the entry)."""
+    """Change entities, then planner settings (reloads the entry)."""
+
+    def __init__(self) -> None:
+        """Initialise."""
+        self._entities: dict[str, Any] = {}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Show the same form, pre-filled."""
+        """Entities, pre-filled."""
         errors: dict[str, str] = {}
         if user_input is not None:
             errors = _validate(user_input)
             if not errors:
-                return self.async_create_entry(data=user_input)
+                self._entities = user_input
+                return await self.async_step_planner()
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                SCHEMA, user_input or dict(self.config_entry.options)
+                await _entities_schema(self.hass),
+                user_input or dict(self.config_entry.options),
             ),
             errors=errors,
+        )
+
+    async def async_step_planner(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Comfort target and trade-offs for the planner."""
+        if user_input is not None:
+            return self.async_create_entry(data={**self._entities, **user_input})
+        current = {
+            k: v for k, v in self.config_entry.options.items() if k in PLANNER_KEYS
+        }
+        return self.async_show_form(
+            step_id="planner",
+            data_schema=self.add_suggested_values_to_schema(PLANNER_SCHEMA, current),
         )

@@ -16,6 +16,19 @@ CONF_CLIMATE: Final = "climate"
 CONF_SOLAR: Final = "solar"
 CONF_FAN: Final = "fan"
 CONF_VENTILATION: Final = "ventilation"
+CONF_WEATHER_FORECAST: Final = "weather_forecast"
+CONF_SOLAR_FORECAST: Final = "solar_forecast"
+CONF_TARGET: Final = "target"
+CONF_BAND: Final = "band"
+CONF_ENERGY_WEIGHT: Final = "energy_weight"
+CONF_SPREAD_WEIGHT: Final = "spread_weight"
+
+DEFAULT_TARGET: Final = 21.0
+DEFAULT_BAND: Final = 0.5
+DEFAULT_ENERGY_WEIGHT: Final = 0.15
+DEFAULT_SPREAD_WEIGHT: Final = 0.5
+PLAN_HORIZON_H: Final = 24
+SETPOINT_NUDGE: Final = 1.0  # K past the thermostat's reading
 
 STEP_SECONDS: Final = 300
 COLLECT_INTERVAL: Final = timedelta(minutes=15)

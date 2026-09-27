@@ -10,7 +10,9 @@
           "climate": "Thermostat",
           "solar": "Solar power",
           "fan": "Fan running",
-          "ventilation": "Ventilation (HRV/ERV) running"
+          "ventilation": "Ventilation (HRV/ERV) running",
+          "weather_forecast": "Weather forecast (if the outdoor source is not a weather entity)",
+          "solar_forecast": "Solar production forecast"
         }
       }
     },
@@ -33,7 +35,23 @@
           "climate": "Thermostat",
           "solar": "Solar power",
           "fan": "Fan running",
-          "ventilation": "Ventilation (HRV/ERV) running"
+          "ventilation": "Ventilation (HRV/ERV) running",
+          "weather_forecast": "Weather forecast (if the outdoor source is not a weather entity)",
+          "solar_forecast": "Solar production forecast"
+        }
+      },
+      "planner": {
+        "title": "Planner",
+        "description": "The planner runs in shadow mode: it recommends heating/cooling but never changes the thermostat. Leave the comfort target empty to follow the thermostat's own setpoint.",
+        "data": {
+          "target": "Comfort target",
+          "band": "Comfort band (±)",
+          "energy_weight": "Energy weight",
+          "spread_weight": "Room spread weight"
+        },
+        "data_description": {
+          "energy_weight": "How much an hour of full heating costs, relative to 1 K of discomfort for an hour. Higher saves energy, lower favours comfort.",
+          "spread_weight": "How much to penalise rooms drifting apart from each other."
         }
       }
     },
@@ -65,6 +83,21 @@
       },
       "time_constant": {
         "name": "{room} time constant"
+      },
+      "recommended_action": {
+        "name": "Recommended action",
+        "state": {
+          "heat": "Heat",
+          "cool": "Cool",
+          "idle": "Idle",
+          "off": "Off"
+        }
+      },
+      "recommended_setpoint": {
+        "name": "Recommended setpoint"
+      },
+      "planned_heating": {
+        "name": "Planned heating (24 h)"
       }
     }
   },

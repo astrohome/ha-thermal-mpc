@@ -177,6 +177,51 @@ class ThermalModel:
             temps, self.mass_k, self.step_h, u_mass, self._mass_gain_matrix()
         )
 
+    def matrices(self) -> tuple[np.ndarray, ...]:
+        """Return ``(A, g_out, G, c, h, k, S)`` as in :meth:`Layout.matrices`."""
+        names = list(self.rooms)
+        idx = {r: j for j, r in enumerate(names)}
+        n = len(names)
+        A = np.zeros((n, n))
+        g_out, c, h = np.zeros(n), np.zeros(n), np.zeros(n)
+        G = np.zeros((n, len(self.inputs)))
+        for j, p in enumerate(self.rooms.values()):
+            g_out[j] = p.g_out
+            A[j, j] -= p.g_out + p.mass_h
+            h[j] = p.mass_h
+            for o, g in p.g_rooms.items():
+                A[j, idx[o]] += g
+                A[j, j] -= g
+            G[j] = [p.gains.get(i, 0.0) for i in self.inputs]
+            c[j] = p.offset
+        return A, g_out, G, c, h, self.mass_k, self._mass_gain_matrix()
+
+    def simulate_many(
+        self,
+        x0: np.ndarray,
+        m0: np.ndarray,
+        t_out: np.ndarray,
+        u: np.ndarray,
+    ) -> np.ndarray:
+        """Vectorised :meth:`simulate` for S scenarios.
+
+        ``x0``/``m0`` (S, R); ``t_out`` (S, N); ``u`` (S, N, I). Returns air
+        temperatures after each step, (S, N, R).
+        """
+        A, g_out, G, c, h, k, Sm = self.matrices()
+        qi = [self.inputs.index(q) for q in self.mass_inputs]
+        n_s, n = t_out.shape
+        out = np.empty((n_s, n, x0.shape[1]))
+        x, m = x0.astype(float), m0.astype(float)
+        for t in range(n):
+            us = u[:, t, :]
+            dx = x @ A.T + t_out[:, t, None] * g_out + h * m + us @ G.T + c
+            dm = k * (x - m) + (us[:, qi] @ Sm.T if qi else 0.0)
+            x = x + self.step_h * dx
+            m = m + self.step_h * dm
+            out[:, t] = x
+        return out
+
     def simulate(
         self,
         t0: np.ndarray,

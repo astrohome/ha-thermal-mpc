@@ -55,6 +55,7 @@ from .core.model import (
 )
 from .core.resample import time_weighted_mean
 from .core.signals import Signal
+from .planner import async_plan
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         )
         self.dataset = Dataset(step=float(STEP_SECONDS))
         self.result = FitResult()
+        self.plan: dict[str, Any] | None = None
         self._collect_lock = asyncio.Lock()
         # How far the recorder has been read, even if nothing usable was found.
         self._collected_until: float | None = None
@@ -198,12 +200,22 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         await self._async_collect()
         if self._fit_due():
             await self.async_fit()
+        await self.async_update_plan()
         self.async_schedule_save()
 
+    async def async_update_plan(self) -> None:
+        """Re-run the shadow planner; failures only disable the plan."""
+        try:
+            self.plan = await async_plan(self)
+        except Exception:  # noqa: BLE001 - planning must never stop collection
+            _LOGGER.exception("Planning failed")
+            self.plan = None
+
     async def async_retrain(self) -> None:
-        """Collect the latest data and refit now."""
+        """Collect the latest data, refit and re-plan now."""
         await self._async_collect()
         await self.async_fit()
+        await self.async_update_plan()
         self.async_schedule_save()
         self.async_update_listeners()
 
@@ -395,6 +407,7 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
                 k: _json_num(live.get(k)) for k, c in self.columns.items() if c.sign
             },
             "unused_inputs": model.unused_inputs if model else [],
+            "plan": self.plan,
             "rooms": rooms,
             **insight,
         }

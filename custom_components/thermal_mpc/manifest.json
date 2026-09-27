@@ -2,6 +2,7 @@
   "domain": "thermal_mpc",
   "name": "Thermal MPC",
   "after_dependencies": [
+    "energy",
     "frontend",
     "http",
     "panel_custom",
@@ -22,5 +23,5 @@
   "requirements": [
     "numpy>=1.26.0"
   ],
-  "version": "0.5.0"
+  "version": "0.6.0"
 }

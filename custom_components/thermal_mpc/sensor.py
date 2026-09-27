@@ -9,7 +9,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.const import EntityCategory, UnitOfTime
+from homeassistant.const import EntityCategory, UnitOfTemperature, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -33,6 +33,9 @@ async def async_setup_entry(
         StatusSensor(coordinator),
         TrainingDataSensor(coordinator),
         PredictionErrorSensor(coordinator),
+        RecommendedActionSensor(coordinator),
+        RecommendedSetpointSensor(coordinator),
+        PlannedHeatingSensor(coordinator),
     ]
     entities += [TimeConstantSensor(coordinator, room) for room in coordinator.rooms]
     # Drop sensors for rooms removed in the options flow.
@@ -194,3 +197,89 @@ class TimeConstantSensor(ThermalEntity, SensorEntity):
             "one_step_rmse_k": _r(p.rmse_one_step),
             "samples": p.n_samples,
         }
+
+
+class RecommendedActionSensor(ThermalEntity, SensorEntity):
+    """What the shadow planner would tell the thermostat to do right now."""
+
+    _attr_translation_key = "recommended_action"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = ["heat", "cool", "idle", "off"]
+
+    def __init__(self, coordinator: ThermalCoordinator) -> None:
+        """Initialise."""
+        super().__init__(coordinator, "recommended_action")
+
+    @property
+    def native_value(self) -> str | None:
+        """Action for the current hour."""
+        plan = self.coordinator.plan
+        if plan is None:
+            return None
+        if plan.get("hvac_mode") == "off":
+            return "off"
+        return plan["action"]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Plan summary; compare with thermostat_action to judge the plan."""
+        plan = self.coordinator.plan
+        if plan is None:
+            return {}
+        thermostat = plan.get("thermostat_action")
+        busy = {"heating": "heat", "cooling": "cool"}.get(thermostat or "", "idle")
+        return {
+            "duty_now": {k: _r(v, 2) for k, v in plan["duty_now"].items()},
+            "thermostat_action": thermostat,
+            "agrees_with_thermostat": busy == plan["action"],
+            "heating_hours_24h": _r(plan["heating_hours"], 2),
+            "cooling_hours_24h": _r(plan["cooling_hours"], 2),
+            "target": plan["target"],
+            "target_source": plan.get("target_source"),
+            "band": plan["band"],
+            "discomfort_kh_planned": _r(plan["discomfort_kh"]["planned"], 2),
+            "discomfort_kh_free_running": _r(plan["discomfort_kh"]["free"], 2),
+            "room_spread_k": _r(plan["spread_k"], 2),
+            "forecast_sources": plan.get("sources", {}),
+            "planned_at": plan.get("created"),
+        }
+
+
+class RecommendedSetpointSensor(ThermalEntity, SensorEntity):
+    """Setpoint that would make the thermostat follow the plan (shadow)."""
+
+    _attr_translation_key = "recommended_setpoint"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator: ThermalCoordinator) -> None:
+        """Initialise."""
+        super().__init__(coordinator, "recommended_setpoint")
+
+    @property
+    def native_value(self) -> float | None:
+        """Current thermostat reading nudged in the direction the plan wants."""
+        plan = self.coordinator.plan
+        return None if plan is None else plan.get("recommended_setpoint")
+
+
+class PlannedHeatingSensor(ThermalEntity, SensorEntity):
+    """Hours of full-duty heating the plan expects over the next 24 h."""
+
+    _attr_translation_key = "planned_heating"
+    _attr_device_class = SensorDeviceClass.DURATION
+    _attr_native_unit_of_measurement = UnitOfTime.HOURS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator: ThermalCoordinator) -> None:
+        """Initialise."""
+        super().__init__(coordinator, "planned_heating")
+
+    @property
+    def native_value(self) -> float | None:
+        """Planned heating hours."""
+        plan = self.coordinator.plan
+        return None if plan is None else _r(plan["heating_hours"], 2)

@@ -64,9 +64,15 @@ async def test_options_flow(hass: HomeAssistant) -> None:
     result = await hass.config_entries.options.async_init(entry.entry_id)
     new = {**OPTIONS, CONF_ROOMS: ["sensor.living"]}
     result = await hass.config_entries.options.async_configure(result["flow_id"], new)
+    assert result["step_id"] == "planner"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {"target": 21.5, "band": 0.5, "energy_weight": 0.2, "spread_weight": 0.5},
+    )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done(wait_background_tasks=True)
     assert entry.options[CONF_ROOMS] == ["sensor.living"]
+    assert entry.options["target"] == 21.5
     assert hass.states.get("sensor.thermal_model_bedroom_time_constant") is None
 
 
@@ -171,6 +177,29 @@ async def test_fit_updates_sensors(hass: HomeAssistant, hass_ws_client) -> None:
     err = hass.states.get("sensor.thermal_model_prediction_error_6_h")
     assert float(err.state) < 0.05
 
+    # Shadow planner: cold outside, rooms below target -> recommends heating.
+    hass.states.async_set(
+        "climate.thermostat",
+        "heat",
+        {"hvac_action": "idle", "current_temperature": 19.0, "temperature": 23.0},
+    )
+    hass.states.async_set("sensor.living", "19.0")
+    hass.states.async_set("sensor.bedroom", "18.5")
+    await coordinator.async_update_plan()
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+    plan = coordinator.plan
+    assert plan is not None
+    assert plan["sources"]["outdoor"] == "yesterday repeated"
+    action = hass.states.get("sensor.thermal_model_recommended_action")
+    assert action.state == "heat"
+    assert action.attributes["agrees_with_thermostat"] is False
+    assert (
+        float(hass.states.get("sensor.thermal_model_recommended_setpoint").state)
+        == 20.0
+    )
+    assert float(hass.states.get("sensor.thermal_model_planned_heating_24_h").state) > 0
+
     # The panel's websocket API returns budgets and replays.
     client = await hass_ws_client(hass)
     await client.send_json({"id": 1, "type": "thermal_mpc/overview"})
@@ -184,6 +213,7 @@ async def test_fit_updates_sensors(hass: HomeAssistant, hass_ws_client) -> None:
         "room:sensor.bedroom",
     }
     assert len(overview["replay"]["times"]) == 48 * 12
+    assert len(overview["plan"]["duty"]["heating"]) == 24
     OVERVIEW_DUMP.write_text(json.dumps(msg["result"]))
 
     # Export service writes the training set as JSON (valid YAML).
