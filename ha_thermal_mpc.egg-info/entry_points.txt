@@ -1,0 +1,2 @@
+[console_scripts]
+thermal-mpc = thermal_mpc.cli:main

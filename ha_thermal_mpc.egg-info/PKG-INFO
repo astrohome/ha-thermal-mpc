@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: ha-thermal-mpc
+Version: 0.1.0
+Summary: Grey-box multi-room thermal model and MPC for Home Assistant
+Requires-Python: >=3.11
+Requires-Dist: numpy>=1.26
+Requires-Dist: pandas>=2.1
+Requires-Dist: scipy>=1.11
+Requires-Dist: pyyaml>=6
+Requires-Dist: requests>=2.31
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: ruff>=0.5; extra == "dev"

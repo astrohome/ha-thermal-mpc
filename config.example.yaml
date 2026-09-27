@@ -1,0 +1,65 @@
+# Copy to config.yaml and adjust. Entity IDs below are from the live HA instance.
+home_assistant:
+  url: http://homeassistant.local:8123
+  token_env: HA_TOKEN          # long-lived access token is read from this env var
+
+step: 5min                     # model time step / resampling grid
+
+# One temperature signal per thermal zone. Prefer dedicated wall sensors;
+# plant-pot sensors (Kaa, Monsterra, Biscuit, Office plant) work but are
+# biased by pot mass and direct sun.
+rooms:
+  living_room:
+    entity: sensor.timmerflotte_temp_hmd_sensor_temperature
+  bedroom:
+    entity: sensor.timmerflotte_temp_hmd_sensor_temperature_2
+  thermostat:                  # 0.5 °C resolution - usable but coarse
+    entity: sensor.aprilaire_indoor_temperature_controlling_sensor
+  primary_bedroom:
+    entity: sensor.kaa_temperature
+  office:
+    entity: sensor.office_plant_temperature
+
+# No physical outdoor sensor yet; met.no current temperature is used.
+outdoor:
+  entity: weather.forecast_home
+  attribute: temperature
+
+# Exogenous / control inputs. Categorical states are mapped to numbers and
+# time-averaged over each step, so on/off signals become duty cycles.
+# sign: positive | negative | free - physical constraint on the fitted gain.
+# NOTE: quote "on"/"off" keys, YAML 1.1 would otherwise parse them as booleans.
+inputs:
+  heating:
+    entity: climate.aprilaire_thermostat
+    attribute: hvac_action
+    map: {"heating": 1.0}
+    default: 0.0
+    sign: positive
+  cooling:
+    entity: climate.aprilaire_thermostat
+    attribute: hvac_action
+    map: {"cooling": 1.0}
+    default: 0.0
+    sign: negative
+  solar_kw:                    # real-time PV power as a proxy for irradiance
+    entity: sensor.vue2_solar_power
+    scale: 0.001
+    sign: positive
+  fan:
+    entity: sensor.aprilaire_fan_status
+    map: {"on": 1.0}
+    default: 0.0
+    sign: free
+  ventilation:
+    entity: sensor.aprilaire_ventilation_status
+    map: {"on": 1.0}
+    default: 0.0
+    sign: free
+
+# Which rooms exchange heat directly. Omit to couple every pair of rooms
+# (more parameters, needs more data). Pairs are undirected.
+# couplings:
+#   - [living_room, thermostat]
+#   - [living_room, office]
+#   - [bedroom, primary_bedroom]

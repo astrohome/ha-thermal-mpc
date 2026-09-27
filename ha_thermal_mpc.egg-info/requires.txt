@@ -1,0 +1,9 @@
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+pyyaml>=6
+requests>=2.31
+
+[dev]
+pytest>=8
+ruff>=0.5
