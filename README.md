@@ -151,7 +151,7 @@ closing.
 Every push to `main` that passes the **Validate** workflow is released
 automatically, so HACS offers numbered versions. The **Release** workflow
 bumps the patch version from the latest `vX.Y.Z` tag, or the minor or major
-version if a commit message contains `[minor]` or `[major]`. If
+version if a commit has a trailer line `Bump: minor` or `Bump: major`. If
 `manifest.json` declares a higher version, it uses that instead. It stamps
 the version into the manifest inside `thermal_mpc.zip`, which HACS installs.
 

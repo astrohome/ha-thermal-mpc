@@ -2,7 +2,7 @@ name: Release
 
 # Every push to main that passes "Validate" becomes a GitHub release, so HACS
 # shows real version numbers instead of commit hashes. Patch bump by default;
-# put [minor] or [major] in a commit message to bump more, or raise
+# a commit trailer line "Bump: minor" or "Bump: major" bumps more, or raise
 # manifest.json's version to choose one explicitly.
 
 on:

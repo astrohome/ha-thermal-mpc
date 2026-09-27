@@ -2,8 +2,9 @@
 
 Rules:
 * start from the newest ``vX.Y.Z`` tag (none yet: 0.0.0);
-* bump patch, or minor/major if any commit since that tag says
-  ``[minor]`` / ``[major]``;
+* bump patch, or minor/major if any commit since that tag has a line that is
+  exactly ``Bump: minor`` / ``Bump: major`` (a trailer, so prose that merely
+  mentions the markers does not count);
 * if ``manifest.json`` already declares a higher version, use that instead
   (lets a human pick a version by editing the manifest).
 
@@ -21,6 +22,7 @@ import sys
 from pathlib import Path
 
 TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+BUMP = re.compile(r"^\s*bump:\s*(major|minor)\s*$", re.IGNORECASE | re.MULTILINE)
 
 
 def parse(version: str) -> tuple[int, int, int]:
@@ -35,10 +37,10 @@ def next_version(tags: list[str], manifest_version: str, messages: list[str]) ->
         tuple(int(g) for g in m.groups()) for t in tags if (m := TAG.match(t))
     )
     major, minor, patch = versions[-1] if versions else (0, 0, 0)
-    text = "\n".join(messages).lower()
-    if "[major]" in text:
+    levels = {m.lower() for msg in messages for m in BUMP.findall(msg)}
+    if "major" in levels:
         bumped = (major + 1, 0, 0)
-    elif "[minor]" in text:
+    elif "minor" in levels:
         bumped = (major, minor + 1, 0)
     else:
         bumped = (major, minor, patch + 1)
