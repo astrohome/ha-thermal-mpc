@@ -146,6 +146,15 @@ fan circulation; removing it needs zone dampers or smart vents.
 See [docs/ha-setup.md](docs/ha-setup.md) for sensor placement and gaps worth
 closing.
 
+## Releases
+
+Every push to `main` that passes the **Validate** workflow is released
+automatically, so HACS offers numbered versions. The **Release** workflow
+bumps the patch version from the latest `vX.Y.Z` tag, or the minor or major
+version if a commit message contains `[minor]` or `[major]`. If
+`manifest.json` declares a higher version, it uses that instead. It stamps
+the version into the manifest inside `thermal_mpc.zip`, which HACS installs.
+
 ## Development
 
 ```bash

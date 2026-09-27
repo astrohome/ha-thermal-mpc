@@ -1,0 +1,79 @@
+name: Release
+
+# Every push to main that passes "Validate" becomes a GitHub release, so HACS
+# shows real version numbers instead of commit hashes. Patch bump by default;
+# put [minor] or [major] in a commit message to bump more, or raise
+# manifest.json's version to choose one explicitly.
+
+on:
+  workflow_run:
+    workflows: [Validate]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Skip if this commit is already released
+        id: check
+        run: |
+          if git tag --points-at HEAD | grep -q '^v'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Only release the newest commit on main
+        if: steps.check.outputs.skip != 'true'
+        id: head
+        run: |
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" != "$(git rev-parse HEAD)" ]; then
+            echo "A newer commit is on main; its run will release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Work out the version
+        if: steps.check.outputs.skip != 'true' && steps.head.outputs.skip != 'true'
+        id: version
+        run: |
+          version=$(python scripts/next_version.py custom_components/thermal_mpc/manifest.json)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version"
+
+      - name: Build the HACS zip with the version stamped in
+        if: steps.version.outputs.version
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("custom_components/thermal_mpc/manifest.json")
+          m = json.loads(p.read_text())
+          m["version"] = "${{ steps.version.outputs.version }}"
+          p.write_text(json.dumps(m, indent=2) + "\n")
+          PY
+          cd custom_components/thermal_mpc
+          zip -r "$GITHUB_WORKSPACE/thermal_mpc.zip" . -x '__pycache__/*' '*/__pycache__/*'
+
+      - name: Create the release
+        if: steps.version.outputs.version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" thermal_mpc.zip \
+            --target "${{ github.event.workflow_run.head_sha }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --generate-notes

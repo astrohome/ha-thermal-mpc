@@ -24,14 +24,3 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: home-assistant/actions/hassfest@master
-
-  hacs:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hacs/action@main
-        with:
-          category: integration
-          # Repo description/topics are GitHub settings, not files; set them
-          # in the repo's About panel and drop this line.
-          ignore: description topics

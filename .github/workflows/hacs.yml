@@ -1,0 +1,24 @@
+name: HACS
+
+# Kept separate from Validate: it checks repository metadata and releases,
+# which the Release workflow (triggered by Validate) creates.
+
+on:
+  push:
+  pull_request:
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 4 * * 1"
+
+jobs:
+  hacs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # Repo description/topics are GitHub settings, not files; set them
+          # in the repo's About panel and drop this line.
+          ignore: description topics
