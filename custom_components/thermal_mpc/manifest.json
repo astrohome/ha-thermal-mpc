@@ -2,6 +2,9 @@
   "domain": "thermal_mpc",
   "name": "Thermal MPC",
   "after_dependencies": [
+    "frontend",
+    "http",
+    "panel_custom",
     "weather"
   ],
   "codeowners": [
@@ -9,7 +12,8 @@
   ],
   "config_flow": true,
   "dependencies": [
-    "recorder"
+    "recorder",
+    "websocket_api"
   ],
   "documentation": "https://github.com/astrohome/ha-thermal-mpc",
   "integration_type": "service",
@@ -18,5 +22,5 @@
   "requirements": [
     "numpy>=1.26.0"
   ],
-  "version": "0.2.0"
+  "version": "0.3.0"
 }

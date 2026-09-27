@@ -33,3 +33,7 @@ HOLDOUT_FRACTION: Final = 0.2
 VALIDATION_HORIZON_H: Final = 6.0
 
 STORAGE_VERSION: Final = 1
+
+PANEL_URL_PATH: Final = "thermal-model"
+PANEL_COMPONENT: Final = "thermal-mpc-panel"
+STATIC_URL: Final = "/thermal_mpc_static"

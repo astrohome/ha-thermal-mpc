@@ -37,12 +37,28 @@ the recorder's purge window.
 | `sensor.thermal_model_training_data` | days of complete rows; `coverage` attribute per signal |
 | `sensor.thermal_model_prediction_error_6_h` | worst-room error 6 h ahead on held-out data; attributes per room at 1/3/6 h |
 | `sensor.thermal_model_<room>_time_constant` | hours to lose ~63 % of the room's lead over outdoors (thermal inertia); attributes hold heating/cooling/solar/fan/HRV gains in K/h and room-to-room coupling |
-| `button.thermal_model_retrain_model` | fit now instead of waiting for the daily refit |
+| `button.thermal_model_retrain_model` | fit now instead of waiting for the daily refit (also on the panel) |
 
 The first fit happens once there are 3 days of complete data, then daily.
 Treat the model as usable for control when the 6 h prediction error is below
 ~0.3 K. **Download diagnostics** on the integration exports the model, its
 validation and the full training set for offline analysis.
+
+## Thermal model panel
+
+The integration adds a **Thermal model** entry to the sidebar. It shows:
+
+* **Where the heat goes.** Rooms and outdoors drawn as a flow diagram. Animated
+  arrows point the way heat is moving, and their thickness and labels give how
+  fast each path changes the room's temperature (K/h). You can view it right
+  now or as a 24 h average. A colored stripe shows how far each room is from
+  the house average.
+* **Heat budget per room.** Every path (outdoor, each neighbouring room,
+  heating, cooling, sun, fan, HRV, unexplained baseline) as a diverging bar:
+  blue cools the room, red warms it, and the net change comes last.
+* **Model check.** Measured temperature against the model over the last 48 h.
+  The model is restarted from the measurement every 6 h and runs on its own
+  in between, which is how a controller would use it.
 
 ## The model
 

@@ -7,11 +7,52 @@ and results are exposed as sensors. No tokens or external services.
 
 from __future__ import annotations
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.storage import Store
+from pathlib import Path
 
-from .const import DOMAIN, PLATFORMS, STORAGE_VERSION
+from homeassistant.components import panel_custom
+from homeassistant.components.http import StaticPathConfig
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.storage import Store
+from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
+
+from . import websocket
+from .const import (
+    DOMAIN,
+    PANEL_COMPONENT,
+    PANEL_URL_PATH,
+    PLATFORMS,
+    STATIC_URL,
+    STORAGE_VERSION,
+)
 from .coordinator import ThermalConfigEntry, ThermalCoordinator
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+FRONTEND_DIR = Path(__file__).parent / "frontend"
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the websocket API and the sidebar panel."""
+    websocket.async_register(hass)
+    if hass.http is None or "frontend" not in hass.config.components:
+        return True  # headless setups (tests): the API still works
+    version = (await async_get_integration(hass, DOMAIN)).version
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(STATIC_URL, str(FRONTEND_DIR), cache_headers=False)]
+    )
+    await panel_custom.async_register_panel(
+        hass,
+        webcomponent_name=PANEL_COMPONENT,
+        frontend_url_path=PANEL_URL_PATH,
+        module_url=f"{STATIC_URL}/{PANEL_COMPONENT}.js?v={version}",
+        sidebar_title="Thermal model",
+        sidebar_icon="mdi:home-thermometer-outline",
+        require_admin=False,
+        config={},
+    )
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ThermalConfigEntry) -> bool:

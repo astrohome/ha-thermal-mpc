@@ -42,6 +42,7 @@ from .const import (
     VALIDATION_HORIZON_H,
 )
 from .core.dataset import Dataset
+from .core.insight import budget, mean_budget, replay
 from .core.model import (
     FREE,
     NEGATIVE,
@@ -313,6 +314,87 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         col = self.columns.get(column)
         return col.label if col else column
 
+    # ----------------------------------------------------------------- overview
+
+    def live_values(self) -> dict[str, float]:
+        """Read the current value of every column from the state machine.
+
+        Falls back to the latest dataset value when an entity is unavailable.
+        """
+        out = {}
+        for key, col in self.columns.items():
+            state = self.hass.states.get(col.signal.entity_id)
+            value = (
+                col.signal.value(state.state, state.attributes)
+                if state
+                else float("nan")
+            )
+            if math.isnan(value) and key in self.dataset.columns:
+                known = self.dataset.columns[key][~np.isnan(self.dataset.columns[key])]
+                value = float(known[-1]) if known.size else float("nan")
+            out[key] = value
+        return out
+
+    async def async_overview(self) -> dict[str, Any]:
+        """Everything the panel needs, as JSON-ready data."""
+        live = self.live_values()
+        model = self.result.model
+        insight: dict[str, Any] = {}
+        if model is not None:
+            insight = await self.hass.async_add_executor_job(
+                _insight, model, self.dataset, live
+            )
+        per_step = STEP_SECONDS / 3600
+        rooms = []
+        for room in self.rooms:
+            params = model.rooms.get(room) if model else None
+            curve = self.result.validation.get(room, [])
+            rooms.append(
+                {
+                    "id": room,
+                    "name": self.label(room),
+                    "entity_id": self.columns[room].signal.entity_id,
+                    "temperature": _json_num(live.get(room)),
+                    "tau_out_h": params.tau_out_h if params else None,
+                    "one_step_rmse": params.rmse_one_step if params else None,
+                    "coupling_h": {
+                        o: 1 / g for o, g in params.g_rooms.items() if g > 1e-6
+                    }
+                    if params
+                    else {},
+                    "gains": params.gains if params else {},
+                    "validation": {
+                        f"{h}h": curve[i]
+                        for h in (1, 3, 6)
+                        if (i := round(h / per_step) - 1) < len(curve)
+                    },
+                }
+            )
+        return {
+            "entry_id": self.config_entry.entry_id,
+            "title": self.config_entry.title,
+            "status": "trained"
+            if model
+            else ("error" if self.result.failed else "collecting"),
+            "message": self.result.error,
+            "training_days": self.training_days,
+            "min_fit_days": MIN_FIT_DAYS,
+            "last_fit": self.result.last_fit.isoformat()
+            if self.result.last_fit
+            else None,
+            "labels": {k: c.label for k, c in self.columns.items()},
+            "outdoor": {
+                "id": self.outdoor,
+                "temperature": _json_num(live.get(self.outdoor)),
+            },
+            "inputs": {
+                k: _json_num(live.get(k)) for k, c in self.columns.items() if c.sign
+            },
+            "unused_inputs": model.unused_inputs if model else [],
+            "rooms": rooms,
+            **insight,
+        }
+
 
 def _fit_and_validate(
     ds: Dataset, spec: ModelSpec
@@ -323,3 +405,20 @@ def _fit_and_validate(
         holdout_model, ds, slice(split, None), horizon_h=VALIDATION_HORIZON_H
     )
     return fit(ds, spec), validation
+
+
+def _insight(
+    model: ThermalModel, ds: Dataset, live: dict[str, float]
+) -> dict[str, Any]:
+    temps = {r: live.get(r, float("nan")) for r in model.rooms}
+    inputs = {i: live.get(i, float("nan")) for i in model.inputs}
+    day = round(24 / model.step_h)
+    return {
+        "budget_now": budget(model, temps, live.get(model.outdoor, np.nan), inputs),
+        "budget_24h": mean_budget(model, ds, slice(max(0, ds.rows - day), ds.rows)),
+        "replay": replay(model, ds),
+    }
+
+
+def _json_num(v: float | None) -> float | None:
+    return None if v is None or math.isnan(v) else round(v, 3)

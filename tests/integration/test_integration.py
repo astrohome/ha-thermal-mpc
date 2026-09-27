@@ -1,6 +1,9 @@
 """End-to-end tests against a real (in-memory) recorder."""
 
+import json
+import os
 from datetime import timedelta
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -21,6 +24,9 @@ from custom_components.thermal_mpc.const import (
     CONF_VENTILATION,
     DOMAIN,
 )
+
+# Optional: dump the panel payload so the frontend can be rendered offline.
+OVERVIEW_DUMP = Path(os.environ.get("THERMAL_OVERVIEW_DUMP", os.devnull))
 
 OPTIONS = {
     CONF_ROOMS: ["sensor.living", "sensor.bedroom"],
@@ -113,7 +119,7 @@ async def test_backfill_from_recorder(hass: HomeAssistant, freezer) -> None:
     assert float(training.state) == pytest.approx(3 / 24, abs=0.01)
 
 
-async def test_fit_updates_sensors(hass: HomeAssistant) -> None:
+async def test_fit_updates_sensors(hass: HomeAssistant, hass_ws_client) -> None:
     entry = MockConfigEntry(
         domain=DOMAIN, title="Thermal model", options=OPTIONS, unique_id="x"
     )
@@ -164,6 +170,21 @@ async def test_fit_updates_sensors(hass: HomeAssistant) -> None:
     assert tau.attributes["gains_k_per_h"]["Heating"] == pytest.approx(2, rel=0.05)
     err = hass.states.get("sensor.thermal_model_prediction_error_6_h")
     assert float(err.state) < 0.05
+
+    # The panel's websocket API returns budgets and replays.
+    client = await hass_ws_client(hass)
+    await client.send_json({"id": 1, "type": "thermal_mpc/overview"})
+    msg = await client.receive_json()
+    assert msg["success"]
+    overview = msg["result"]["entries"][0]
+    assert overview["status"] == "trained"
+    assert {r["name"] for r in overview["rooms"]} == {"Living", "Bedroom"}
+    assert set(overview["budget_24h"]) == {
+        "room:sensor.living",
+        "room:sensor.bedroom",
+    }
+    assert len(overview["replay"]["times"]) == 48 * 12
+    OVERVIEW_DUMP.write_text(json.dumps(msg["result"]))
 
     # Model survives a reload through .storage.
     coordinator.async_schedule_save()
