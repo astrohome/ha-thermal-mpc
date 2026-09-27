@@ -7,11 +7,19 @@ and results are exposed as sensors. No tokens or external services.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import voluptuous as vol
 from homeassistant.components import panel_custom
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+)
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
@@ -31,11 +39,40 @@ from .coordinator import ThermalConfigEntry, ThermalCoordinator
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 FRONTEND_DIR = Path(__file__).parent / "frontend"
+EXPORT_FILE = "thermal_mpc_dataset.yaml"
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register the websocket API and the sidebar panel."""
     websocket.async_register(hass)
+
+    async def export_dataset(call: ServiceCall) -> ServiceResponse:
+        """Write the training set and model to the config folder."""
+        payload = {
+            e.entry_id: {
+                "title": e.title,
+                "labels": {k: c.label for k, c in e.runtime_data.columns.items()},
+                "model": e.runtime_data.result.model.to_dict()
+                if e.runtime_data.result.model
+                else None,
+                "dataset": e.runtime_data.dataset.to_dict(),
+            }
+            for e in hass.config_entries.async_entries(DOMAIN)
+            if e.state is ConfigEntryState.LOADED
+        }
+        path = Path(hass.config.path(EXPORT_FILE))
+        # JSON is valid YAML; the .yaml name keeps it readable by YAML tools.
+        text = json.dumps(payload, separators=(",", ":"))
+        await hass.async_add_executor_job(path.write_text, text)
+        return {"path": str(path), "bytes": len(text)}
+
+    hass.services.async_register(
+        DOMAIN,
+        "export_dataset",
+        export_dataset,
+        schema=vol.Schema({}),
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     if hass.http is None or "frontend" not in hass.config.components:
         return True  # headless setups (tests): the API still works
     version = (await async_get_integration(hass, DOMAIN)).version

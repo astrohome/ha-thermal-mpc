@@ -44,7 +44,9 @@
   },
   "entity": {
     "button": {
-      "retrain": { "name": "Retrain model" }
+      "retrain": {
+        "name": "Retrain model"
+      }
     },
     "sensor": {
       "status": {
@@ -55,9 +57,21 @@
           "error": "Error"
         }
       },
-      "training_data": { "name": "Training data" },
-      "prediction_error": { "name": "Prediction error (6 h)" },
-      "time_constant": { "name": "{room} time constant" }
+      "training_data": {
+        "name": "Training data"
+      },
+      "prediction_error": {
+        "name": "Prediction error (6 h)"
+      },
+      "time_constant": {
+        "name": "{room} time constant"
+      }
+    }
+  },
+  "services": {
+    "export_dataset": {
+      "name": "Export training data",
+      "description": "Write the collected training set and fitted model to thermal_mpc_dataset.yaml in the config folder, for offline analysis. Overwrites the previous export."
     }
   }
 }

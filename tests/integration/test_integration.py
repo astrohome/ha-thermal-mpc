@@ -186,6 +186,14 @@ async def test_fit_updates_sensors(hass: HomeAssistant, hass_ws_client) -> None:
     assert len(overview["replay"]["times"]) == 48 * 12
     OVERVIEW_DUMP.write_text(json.dumps(msg["result"]))
 
+    # Export service writes the training set as JSON (valid YAML).
+    resp = await hass.services.async_call(
+        DOMAIN, "export_dataset", {}, blocking=True, return_response=True
+    )
+    exported = json.loads(Path(resp["path"]).read_text())
+    assert exported[entry.entry_id]["model"]["rooms"]
+    assert len(exported[entry.entry_id]["dataset"]["columns"]) == 7
+
     # Model survives a reload through .storage.
     coordinator.async_schedule_save()
     await coordinator._store._async_handle_write_data()  # noqa: SLF001

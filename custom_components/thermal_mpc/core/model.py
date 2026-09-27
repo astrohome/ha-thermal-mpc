@@ -25,8 +25,23 @@ from typing import Any
 import numpy as np
 
 from .dataset import Dataset
+from .identify import Layout, integral_fit, refine
+from .lsq import FREE, NEGATIVE, POSITIVE, nnls, signed_lstsq
 
-POSITIVE, NEGATIVE, FREE = "positive", "negative", "free"
+__all__ = [
+    "FREE",
+    "NEGATIVE",
+    "POSITIVE",
+    "ModelSpec",
+    "NotEnoughDataError",
+    "RoomParams",
+    "ThermalModel",
+    "fit",
+    "nnls",
+    "signed_lstsq",
+    "validate",
+]
+
 MIN_INPUT_COVERAGE = 0.5
 SAMPLES_PER_PARAM = 10
 
@@ -130,65 +145,19 @@ class ThermalModel:
         )
 
 
-def nnls(A: np.ndarray, b: np.ndarray, max_iter: int | None = None) -> np.ndarray:
-    """Lawson-Hanson non-negative least squares: min ||Ax - b|| s.t. x >= 0."""
-    _, n = A.shape
-    x = np.zeros(n)
-    passive = np.zeros(n, dtype=bool)
-    tol = 10 * np.finfo(float).eps * np.linalg.norm(A, 1) * max(A.shape)
-    max_iter = max_iter or 30 * n
-    w = A.T @ (b - A @ x)
-    for _ in range(max_iter):
-        if passive.all() or not (w[~passive] > tol).any():
-            break
-        passive[np.argmax(np.where(passive, -np.inf, w))] = True
-        for _ in range(max_iter):
-            z = np.zeros(n)
-            z[passive] = np.linalg.lstsq(A[:, passive], b, rcond=None)[0]
-            if (z[passive] > tol).all():
-                break
-            neg = passive & (z <= tol)
-            alpha = np.min(x[neg] / (x[neg] - z[neg]))
-            x = x + alpha * (z - x)
-            passive &= x > tol
-        x = z
-        w = A.T @ (b - A @ x)
-    return x
+def fit(
+    ds: Dataset,
+    spec: ModelSpec,
+    rows: slice | None = None,
+    window_h: float = 1.0,
+    horizon_h: float | None = 6.0,
+) -> ThermalModel:
+    """Fit all rooms on ``ds`` (optionally only ``rows`` of it).
 
-
-def signed_lstsq(A: np.ndarray, b: np.ndarray, signs: list[str]) -> np.ndarray:
-    """Least squares where each coefficient is positive, negative or free.
-
-    Free coefficients are projected out so the rest is a plain NNLS problem,
-    then recovered by ordinary least squares on the residual.
+    Stage 1 regresses ``window_h``-hour temperature changes (see
+    :mod:`.identify`); stage 2 refines on ``horizon_h``-hour open-loop
+    prediction error. ``horizon_h=None`` skips stage 2.
     """
-    flip = np.array([-1.0 if s == NEGATIVE else 1.0 for s in signs])
-    A = A * flip
-    free = np.array([s == FREE for s in signs])
-    # Scale columns for conditioning; positive scaling keeps the signs.
-    norms = np.linalg.norm(A, axis=0)
-    norms[norms == 0] = 1.0
-    A = A / norms
-
-    x = np.zeros(A.shape[1])
-    A_f, A_c = A[:, free], A[:, ~free]
-    if free.any():
-        u, s, _ = np.linalg.svd(A_f, full_matrices=False)
-        q = u[:, s > s.max() * 1e-10] if s.size and s.max() > 0 else u[:, :0]
-
-        def project(m: np.ndarray) -> np.ndarray:
-            return m - q @ (q.T @ m)
-
-        x_c = nnls(project(A_c), project(b)) if A_c.shape[1] else np.zeros(0)
-        x_f = np.linalg.lstsq(A_f, b - A_c @ x_c, rcond=None)[0]
-        x[free], x[~free] = x_f, x_c
-    else:
-        x = nnls(A, b)
-    return x / norms * flip
-
-
-def fit(ds: Dataset, spec: ModelSpec, rows: slice | None = None) -> ThermalModel:
-    """Fit every room on ``ds`` (optionally only ``rows`` of it)."""
     step_h = ds.step / 3600.0
     sl = rows or slice(None)
     col = {k: v[sl] for k, v in ds.columns.items()}
@@ -204,41 +173,45 @@ def fit(ds: Dataset, spec: ModelSpec, rows: slice | None = None) -> ThermalModel
         (inputs if cov >= MIN_INPUT_COVERAGE else unused).append(name)
 
     nbrs = spec.neighbours()
+    layout = Layout(spec.rooms, nbrs, inputs, dict(spec.inputs))
+    temps = np.column_stack([col[r] for r in spec.rooms])
     t_out = col[spec.outdoor]
-    rooms = {}
-    for room in spec.rooms:
-        t_i = col[room]
-        dtdt = np.full_like(t_i, np.nan)
-        dtdt[:-1] = (t_i[1:] - t_i[:-1]) / step_h
-        feats = [t_out - t_i]
-        signs = [POSITIVE]
-        for other in nbrs[room]:
-            feats.append(col[other] - t_i)
-            signs.append(POSITIVE)
-        for inp in inputs:
-            feats.append(col[inp])
-            signs.append(spec.inputs[inp])
-        feats.append(np.ones_like(t_i))
-        signs.append(FREE)
+    n = len(t_out)
+    u = np.column_stack([col[i] for i in inputs]) if inputs else np.zeros((n, 0))
 
-        design = np.column_stack(feats)
-        mask = ~np.isnan(design).any(axis=1) & ~np.isnan(dtdt)
-        n = int(mask.sum())
-        if n < SAMPLES_PER_PARAM * design.shape[1]:
+    window = max(1, round(window_h / step_h))
+    theta, used = integral_fit(temps, t_out, u, layout, step_h, window)
+    for (room, a, b), n_used in zip(layout.blocks(), used, strict=True):
+        if n_used < SAMPLES_PER_PARAM * (b - a):
             raise NotEnoughDataError(
-                f"{room}: {n} complete samples for {design.shape[1]} parameters"
+                f"{room}: {n_used} complete windows for {b - a} parameters"
             )
-        A, y = design[mask], dtdt[mask]
-        coef = signed_lstsq(A, y, signs)
-        resid_k = (A @ coef - y) * step_h
-        k = 1 + len(nbrs[room])
+    if horizon_h:
+        horizon = max(1, round(horizon_h / step_h))
+        # About one segment per hour, capped so a long history stays fast.
+        stride = max(round(1 / step_h), n // 1500)
+        theta, _ = refine(theta, layout, temps, t_out, u, step_h, horizon, stride)
+
+    # One-step residuals of the final model, for reference.
+    A, g_out, G, c = layout.matrices(theta)
+    pred = temps[:-1] + step_h * (
+        temps[:-1] @ A.T + t_out[:-1, None] * g_out + u[:-1] @ G.T + c
+    )
+    resid = pred - temps[1:]
+    rooms = {}
+    for k, (room, a, _) in enumerate(layout.blocks()):
+        ok = ~np.isnan(resid[:, k])
+        nb = nbrs[room]
+        b = a + 1 + len(nb)
         rooms[room] = RoomParams(
-            g_out=float(coef[0]),
-            g_rooms={o: float(c) for o, c in zip(nbrs[room], coef[1:k], strict=True)},
-            gains={i: float(c) for i, c in zip(inputs, coef[k:-1], strict=True)},
-            offset=float(coef[-1]),
-            rmse_one_step=float(np.sqrt(np.mean(resid_k**2))),
-            n_samples=n,
+            g_out=float(theta[a]),
+            g_rooms={o: float(theta[a + 1 + j]) for j, o in enumerate(nb)},
+            gains={i: float(theta[b + j]) for j, i in enumerate(inputs)},
+            offset=float(theta[b + len(inputs)]),
+            rmse_one_step=float(np.sqrt(np.mean(resid[ok, k] ** 2)))
+            if ok.any()
+            else 0.0,
+            n_samples=used[k],
         )
     return ThermalModel(
         step_h=step_h,

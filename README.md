@@ -74,12 +74,23 @@ dT_i/dt = Σ_j g_ij (T_j − T_i) + g_io (T_out − T_i) + Σ_u b_iu · u + c_i
   duty cycle, PV power, fan and HRV duty.
 * `c_i`: constant internal gains or sensor bias.
 
-The model is linear in its parameters, so each room is fitted by
-sign-constrained least squares (conductances ≥ 0, heating ≥ 0, cooling ≤ 0)
-in plain numpy. The integration trains on 80 % of the data, reports the open-loop
-prediction error on the last 20 %, then refits on everything. Physical
-parameters carry over between seasons far better than a black-box model, and
-the daily refit on a rolling window follows seasonal drift.
+Fitting runs in two stages, in plain numpy:
+
+1. **Integral regression.** Regress hour-long temperature changes on the
+   summed regressors, with signs constrained (conductances ≥ 0, heating ≥ 0,
+   cooling ≤ 0). Regressing noisy 5-minute differences instead biases slow
+   rooms to "no heat loss at all".
+2. **Multi-step refinement.** Projected Levenberg-Marquardt minimises the
+   6 h open-loop prediction error over overlapping segments, the error that
+   matters for planning.
+
+The integration trains on 80 % of the data, reports the prediction error on
+the last 20 %, then refits on everything. Physical parameters carry over
+between seasons far better than a black-box model, and the daily refit on a
+rolling window follows seasonal drift.
+
+`thermal_mpc.export_dataset` writes the training set and model to
+`thermal_mpc_dataset.yaml` in the config folder for offline analysis.
 
 ## Roadmap
 
