@@ -32,6 +32,7 @@ from .const import (
     DOMAIN,
     FIT_INTERVAL,
     FIT_RETRY_INTERVAL,
+    FIT_VERSION,
     HOLDOUT_FRACTION,
     MIN_FIT_DAYS,
     RECORDER_LAG,
@@ -177,7 +178,11 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             if set(model.rooms) == set(self.rooms) and model.outdoor == self.outdoor:
                 self.result.model = model
                 self.result.validation = data.get("validation", {})
-                if last := data.get("last_fit"):
+                # A model from older fitting code is shown until the refit,
+                # which happens at the first update (last_fit unset).
+                if data.get("fit_version") == FIT_VERSION and (
+                    last := data.get("last_fit")
+                ):
                     self.result.last_fit = dt_util.parse_datetime(last)
 
     def _data_to_save(self) -> dict[str, Any]:
@@ -185,6 +190,7 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             "dataset": self.dataset.to_dict(),
             "model": self.result.model.to_dict() if self.result.model else None,
             "validation": self.result.validation,
+            "fit_version": FIT_VERSION,
             "last_fit": self.result.last_fit.isoformat()
             if self.result.last_fit
             else None,

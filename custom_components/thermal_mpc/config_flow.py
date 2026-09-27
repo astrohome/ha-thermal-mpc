@@ -42,25 +42,19 @@ from .const import (
     DEFAULT_SPREAD_WEIGHT,
     DOMAIN,
 )
+from .solar_forecast import async_forecast_entries
 
 ON_OFF_DOMAINS = ["sensor", "binary_sensor", "fan", "switch", "select"]
 PLANNER_KEYS = (CONF_TARGET, CONF_BAND, CONF_ENERGY_WEIGHT, CONF_SPREAD_WEIGHT)
 
 
 async def _solar_forecast_options(hass: HomeAssistant) -> list[SelectOptionDict]:
-    """Config entries of integrations that provide an energy solar forecast."""
-    try:
-        from homeassistant.components.energy.websocket_api import (  # noqa: PLC0415
-            async_get_energy_platforms,
-        )
-
-        platforms = await async_get_energy_platforms(hass)
-    except Exception:  # noqa: BLE001 - energy not set up: no forecast choice
-        return []
+    """Config entries of integrations that provide a solar forecast."""
     return [
-        SelectOptionDict(value=e.entry_id, label=e.title or e.domain)
-        for e in hass.config_entries.async_entries()
-        if e.domain in platforms
+        SelectOptionDict(
+            value=e.entry_id, label=e.title or f"{e.domain} ({e.entry_id[-6:]})"
+        )
+        for e in await async_forecast_entries(hass)
     ]
 
 

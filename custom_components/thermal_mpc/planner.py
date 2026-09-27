@@ -33,6 +33,7 @@ from .const import (
 from .core.forecast import hourly_energy_to_kw, interpolate, persistence
 from .core.insight import observed_mass
 from .core.mpc import PlanInputs, PlanSettings, plan
+from .solar_forecast import async_get_wh_hours
 
 if TYPE_CHECKING:
     from .coordinator import ThermalCoordinator
@@ -63,26 +64,6 @@ async def async_weather_forecast(
         if when is not None and isinstance(temp, (int, float)):
             points.append((when.timestamp(), float(temp)))
     return points
-
-
-async def async_solar_forecast(
-    hass: HomeAssistant, config_entry_id: str
-) -> dict[str, float]:
-    """``{iso_hour: Wh}`` from any energy solar-forecast provider."""
-    try:
-        from homeassistant.components.energy.websocket_api import (  # noqa: PLC0415
-            async_get_energy_platforms,
-        )
-
-        platforms = await async_get_energy_platforms(hass)
-        entry = hass.config_entries.async_get_entry(config_entry_id)
-        if entry is None or entry.domain not in platforms:
-            return {}
-        data = await platforms[entry.domain](hass, config_entry_id)
-    except Exception:  # noqa: BLE001 - a missing forecast must not stop planning
-        _LOGGER.debug("Solar forecast unavailable", exc_info=True)
-        return {}
-    return (data or {}).get("wh_hours", {})
 
 
 def _settings(
@@ -150,7 +131,7 @@ async def async_plan(coordinator: ThermalCoordinator) -> dict[str, Any] | None:
         history = ds.columns.get(name, np.zeros(0))
         if name.startswith("solar_kw:"):
             fc_entry = opts.get(CONF_SOLAR_FORECAST)
-            wh = await async_solar_forecast(hass, fc_entry) if fc_entry else {}
+            wh = await async_get_wh_hours(hass, fc_entry) if fc_entry else {}
             series = hourly_energy_to_kw(wh, times) if wh else None
             if series is None:
                 series = persistence(history, per_day, n)
