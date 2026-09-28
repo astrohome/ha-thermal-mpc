@@ -120,6 +120,8 @@ class ThermalModel:
     inputs: list[str]
     unused_inputs: list[str] = field(default_factory=list)
     fusion: dict[str, Any] = field(default_factory=dict)  # sensor calibration
+    # Full-duty level of scaled inputs (e.g. furnace kW for a gas meter).
+    input_capacity: dict[str, float] = field(default_factory=dict)
 
     def derivative(
         self,
@@ -255,6 +257,7 @@ class ThermalModel:
             "inputs": self.inputs,
             "unused_inputs": self.unused_inputs,
             "fusion": self.fusion,
+            "input_capacity": self.input_capacity,
             "rooms": {k: asdict(v) for k, v in self.rooms.items()},
         }
 
@@ -267,6 +270,7 @@ class ThermalModel:
             inputs=data["inputs"],
             unused_inputs=data.get("unused_inputs", []),
             fusion=data.get("fusion", {}),
+            input_capacity=data.get("input_capacity", {}),
             rooms={k: RoomParams(**v) for k, v in data["rooms"].items()},
         )
 

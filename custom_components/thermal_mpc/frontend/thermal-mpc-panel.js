@@ -421,6 +421,18 @@ class ThermalMpcPanel extends HTMLElement {
     const thermo = p.thermostat_action || "unknown";
     const busy = { heating: "heat", cooling: "cool" }[thermo] || "idle";
     const agree = busy === p.action;
+    // Gas mode: "4.5 h · 42 ft³ · $0.61".
+    let gasText = "";
+    if (p.gas_volume != null) {
+      gasText = ` · ${fmt(p.gas_volume, 0)} ${esc(p.gas_unit || "")}`;
+      if (p.gas_cost != null) {
+        let cost = fmt(p.gas_cost, 2);
+        try {
+          if (p.currency) cost = new Intl.NumberFormat(undefined, { style: "currency", currency: p.currency }).format(p.gas_cost);
+        } catch (_) { /* unknown currency code: plain number */ }
+        gasText += ` · ${esc(cost)}`;
+      }
+    }
     const t = p.times;
     const W = 920;
     const L = 40;
@@ -536,7 +548,7 @@ class ThermalMpcPanel extends HTMLElement {
             <div class="v">${p.recommended_setpoint != null ? `${fmt(p.recommended_setpoint, 1)} °C` : "–"}</div>
             <div class="s">target ${fmt(p.target, 1)} ± ${fmt(p.band, 1)} K (${esc(p.target_source || "")})</div></div>
           <div class="tile"><div class="k">Planned heating</div>
-            <div class="v">${fmt(p.heating_hours, 1)} h</div>
+            <div class="v">${fmt(p.heating_hours, 1)} h${gasText}</div>
             <div class="s">${p.cooling_hours > 0 ? `cooling ${fmt(p.cooling_hours, 1)} h · ` : ""}next 24 h</div></div>
           <div class="tile"><div class="k">Outside the comfort band</div>
             <div class="v">${fmt(p.discomfort_kh.planned, 1)} K·h</div>

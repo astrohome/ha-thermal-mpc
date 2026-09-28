@@ -30,6 +30,9 @@ from .const import (
     CONF_CLIMATE,
     CONF_ENERGY_WEIGHT,
     CONF_FAN,
+    CONF_GAS_METER,
+    CONF_GAS_PRICE,
+    CONF_GAS_UNIT,
     CONF_GROUP_BY_AREA,
     CONF_OUTDOOR,
     CONF_ROOMS,
@@ -43,11 +46,19 @@ from .const import (
     DEFAULT_ENERGY_WEIGHT,
     DEFAULT_SPREAD_WEIGHT,
     DOMAIN,
+    GAS_UNIT_AUTO,
 )
+from .core.gas import UNITS as GAS_UNITS
 from .solar_forecast import async_forecast_entries
 
 ON_OFF_DOMAINS = ["sensor", "binary_sensor", "fan", "switch", "select"]
-PLANNER_KEYS = (CONF_TARGET, CONF_BAND, CONF_ENERGY_WEIGHT, CONF_SPREAD_WEIGHT)
+PLANNER_KEYS = (
+    CONF_TARGET,
+    CONF_BAND,
+    CONF_ENERGY_WEIGHT,
+    CONF_SPREAD_WEIGHT,
+    CONF_GAS_PRICE,
+)
 
 
 async def _solar_forecast_options(hass: HomeAssistant) -> list[SelectOptionDict]:
@@ -83,6 +94,18 @@ async def _entities_schema(hass: HomeAssistant) -> vol.Schema:
         vol.Optional(CONF_VENTILATION): EntitySelector(
             EntitySelectorConfig(domain=ON_OFF_DOMAINS)
         ),
+        vol.Optional(CONF_GAS_METER): EntitySelector(
+            EntitySelectorConfig(domain="sensor", device_class=["gas", "energy"])
+        ),
+        vol.Optional(CONF_GAS_UNIT, default=GAS_UNIT_AUTO): SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=GAS_UNIT_AUTO, label="From the meter"),
+                    *(SelectOptionDict(value=u, label=u) for u in GAS_UNITS),
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        ),
         vol.Optional(CONF_WEATHER_FORECAST): EntitySelector(
             EntitySelectorConfig(domain="weather")
         ),
@@ -115,6 +138,7 @@ PLANNER_SCHEMA = vol.Schema(
         vol.Required(CONF_SPREAD_WEIGHT, default=DEFAULT_SPREAD_WEIGHT): _number(
             0, 5, 0.05
         ),
+        vol.Optional(CONF_GAS_PRICE): _number(0, 1000, 0.0001),
     }
 )
 

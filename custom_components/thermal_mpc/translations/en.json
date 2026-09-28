@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Describe the house",
-        "description": "Pick one temperature sensor per room (dedicated wall sensors work best), an outdoor temperature source, and the thermostat. Solar power is used as a proxy for sunlight; fan and ventilation are optional on/off signals such as an HRV status. History already in the recorder is used for training straight away.",
+        "description": "Pick one temperature sensor per room (dedicated wall sensors work best), an outdoor temperature source, and the thermostat. A gas meter, if the furnace burns gas, measures the heat it delivers. Solar power is used as a proxy for sunlight; fan and ventilation are optional on/off signals such as an HRV status. History already in the recorder is used for training straight away.",
         "data": {
           "rooms": "Room temperature sensors (several per room are fine)",
           "outdoor": "Outdoor temperature (sensor or weather entity)",
@@ -13,10 +13,14 @@
           "ventilation": "Ventilation (HRV/ERV) running",
           "weather_forecast": "Weather forecast (if the outdoor source is not a weather entity)",
           "solar_forecast": "Solar production forecast",
-          "group_by_area": "Treat sensors in the same area as one room"
+          "group_by_area": "Treat sensors in the same area as one room",
+          "gas_meter": "Gas meter",
+          "gas_unit": "Gas meter unit"
         },
         "data_description": {
-          "group_by_area": "Sensors in one area are calibrated against each other (offset, sun exposure, noise) and blended into one room temperature."
+          "group_by_area": "Sensors in one area are calibrated against each other (offset, sun exposure, noise) and blended into one room temperature.",
+          "gas_meter": "Optional. Gas burned measures the heat the furnace actually delivers (better than on/off time for two-stage or modulating furnaces). Use a cumulative meter reading.",
+          "gas_unit": "Override when the meter reports the wrong unit, e.g. a raw ft³ counter labelled CCF."
         }
       }
     },
@@ -42,10 +46,14 @@
           "ventilation": "Ventilation (HRV/ERV) running",
           "weather_forecast": "Weather forecast (if the outdoor source is not a weather entity)",
           "solar_forecast": "Solar production forecast",
-          "group_by_area": "Treat sensors in the same area as one room"
+          "group_by_area": "Treat sensors in the same area as one room",
+          "gas_meter": "Gas meter",
+          "gas_unit": "Gas meter unit"
         },
         "data_description": {
-          "group_by_area": "Sensors in one area are calibrated against each other (offset, sun exposure, noise) and blended into one room temperature."
+          "group_by_area": "Sensors in one area are calibrated against each other (offset, sun exposure, noise) and blended into one room temperature.",
+          "gas_meter": "Optional. Gas burned measures the heat the furnace actually delivers (better than on/off time for two-stage or modulating furnaces). Use a cumulative meter reading.",
+          "gas_unit": "Override when the meter reports the wrong unit, e.g. a raw ft³ counter labelled CCF."
         }
       },
       "planner": {
@@ -55,11 +63,13 @@
           "target": "Comfort target",
           "band": "Comfort band (±)",
           "energy_weight": "Energy weight",
-          "spread_weight": "Room spread weight"
+          "spread_weight": "Room spread weight",
+          "gas_price": "Gas price (per meter unit)"
         },
         "data_description": {
           "energy_weight": "How much an hour of full heating costs, relative to 1 K of discomfort for an hour. Higher saves energy, lower favours comfort.",
-          "spread_weight": "How much to penalise rooms drifting apart from each other."
+          "spread_weight": "How much to penalise rooms drifting apart from each other.",
+          "gas_price": "Optional. Used to show the cost of the planned gas, in your Home Assistant currency."
         }
       }
     },
@@ -106,6 +116,9 @@
       },
       "planned_heating": {
         "name": "Planned heating (24 h)"
+      },
+      "planned_gas": {
+        "name": "Planned gas (24 h)"
       }
     }
   },

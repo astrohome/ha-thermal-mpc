@@ -49,7 +49,7 @@ async def test_config_flow(hass: HomeAssistant) -> None:
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], OPTIONS)
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["options"] == {**OPTIONS, "group_by_area": True}
+    assert result["options"] == {**OPTIONS, "group_by_area": True, "gas_unit": "auto"}
     await hass.async_block_till_done(wait_background_tasks=True)
 
 

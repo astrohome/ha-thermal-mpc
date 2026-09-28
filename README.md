@@ -20,6 +20,7 @@ external services.
    * **Outdoor temperature**: a sensor, or a weather entity (its `temperature`
      attribute is used)
    * **Thermostat**: its `hvac_action` gives the heating/cooling duty cycle
+   * *optional* **Gas meter**: the furnace's gas use (see below)
    * *optional* **Solar power**: PV output as a proxy for sunlight (W or kW)
    * *optional* **Fan** / **Ventilation**: anything whose state is `on` while
      running, e.g. `sensor.aprilaire_fan_status`, `sensor.aprilaire_ventilation_status`
@@ -45,6 +46,28 @@ others in the room:
 The room temperature is the calibrated, noise-weighted blend of whichever
 sensors are online, so one sensor dropping out doesn't break the room. The
 panel's room cards list each sensor's share, offset, sun exposure and noise.
+
+### Gas meter as the heating input
+
+The thermostat's `hvac_action` only says *on* or *off*, so a two-stage or
+modulating furnace looks the same at 60 % and 100 % fire. A gas meter measures
+the heat actually burned. With one configured:
+
+* its running total becomes a heat rate in kW per 5-minute step (smoothed
+  over 15 minutes, as meters report a whole unit at a time), and replaces the
+  heating duty as the model's heating input (**Gas heat**, gain in K/h per kW);
+* the unit comes from the meter, or from the **Gas meter unit** option when
+  the meter mislabels it (e.g. a raw ft³ counter reported as CCF). Heat per
+  unit: m³ 10.55 kWh, ft³ 0.3039, CCF 30.39, MCF 303.9, therm 29.307, plus
+  Wh/kWh/MWh/MJ/GJ;
+* the furnace's full-fire capacity is learned as the 90th percentile of the
+  gas rate while the thermostat heats (≥ 80 % duty). Until 2 h of that have
+  been seen, the model keeps using the heating duty;
+* the planner still plans a duty per hour, which fires the furnace at
+  duty × capacity, and reports the planned gas and, with a **Gas price** set
+  (Planner options, per meter unit), its cost.
+
+Other gas appliances (stove, fireplace, dryer) add noise to the signal.
 
 ## What you get
 
@@ -140,6 +163,7 @@ Tune the trade-offs in the integration's options (Planner page).
 | `sensor.thermal_model_recommended_action` | heat / cool / idle for this hour, plus whether the thermostat is doing the same thing |
 | `sensor.thermal_model_recommended_setpoint` | setpoint that would make the thermostat follow the plan now (its reading ±1 K) |
 | `sensor.thermal_model_planned_heating_24_h` | hours of full-duty heating planned |
+| `sensor.thermal_model_planned_gas_24_h` | with a gas meter: planned gas in the meter's unit; attributes `heating_kwh`, `cost`, `capacity_kw` |
 
 The panel's **Next 24 hours** card shows planned room temperatures against
 the comfort band, the hourly duty, and the outdoor forecast.

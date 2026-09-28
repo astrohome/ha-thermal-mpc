@@ -19,6 +19,7 @@ from .const import (
     CONF_BAND,
     CONF_CLIMATE,
     CONF_ENERGY_WEIGHT,
+    CONF_GAS_PRICE,
     CONF_SOLAR_FORECAST,
     CONF_SPREAD_WEIGHT,
     CONF_TARGET,
@@ -140,7 +141,7 @@ async def async_plan(coordinator: ThermalCoordinator) -> dict[str, Any] | None:
                 sources["solar"] = "solar forecast"
             u[:, j] = series
             solar_kw = series
-        elif name.startswith(("heating:", "cooling:")):
+        elif name.startswith(("heating:", "cooling:", "gas:")):
             continue  # decided by the planner
         else:
             recent = history[-per_day:]
@@ -158,6 +159,11 @@ async def async_plan(coordinator: ThermalCoordinator) -> dict[str, Any] | None:
     settings, target_source = _settings(coordinator, climate)
     heat_col = next((c for c in model.inputs if c.startswith("heating:")), None)
     cool_col = next((c for c in model.inputs if c.startswith("cooling:")), None)
+    # Gas mode: a heating duty fires the furnace at a share of its capacity.
+    gas_col = next((c for c in model.inputs if c.startswith("gas:")), None)
+    capacity = model.input_capacity.get(gas_col) if gas_col else None
+    if gas_col and capacity:
+        heat_col = gas_col
     inputs = PlanInputs(
         start=start,
         temps=temps,
@@ -168,8 +174,9 @@ async def async_plan(coordinator: ThermalCoordinator) -> dict[str, Any] | None:
         sources=sources,
     )
     result = await hass.async_add_executor_job(
-        plan, model, inputs, settings, heat_col, cool_col
+        plan, model, inputs, settings, heat_col, cool_col, capacity
     )
+    result.update(_gas_use(coordinator, result.get("heating_kwh")))
     result["target_source"] = target_source
     result["hvac_mode"] = climate.state if climate else None
     result["thermostat_action"] = (
@@ -178,6 +185,27 @@ async def async_plan(coordinator: ThermalCoordinator) -> dict[str, Any] | None:
     result["recommended_setpoint"] = _setpoint(result, climate)
     result["created"] = dt_util.utcnow().isoformat()
     return result
+
+
+def _gas_use(
+    coordinator: ThermalCoordinator, heating_kwh: float | None
+) -> dict[str, Any]:
+    """Planned gas in the meter's unit, and its cost if a price is set."""
+    if heating_kwh is None or not coordinator.gas_col:
+        return {
+            "gas_volume": None,
+            "gas_unit": None,
+            "gas_cost": None,
+            "currency": None,
+        }
+    volume = heating_kwh / coordinator.gas_kwh_per_unit
+    price = coordinator.config_entry.options.get(CONF_GAS_PRICE)
+    return {
+        "gas_volume": volume,
+        "gas_unit": coordinator.gas_unit,
+        "gas_cost": volume * float(price) if price is not None else None,
+        "currency": coordinator.hass.config.currency,
+    }
 
 
 def _setpoint(result: dict[str, Any], climate: Any) -> float | None:

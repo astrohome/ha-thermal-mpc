@@ -54,3 +54,37 @@ def time_weighted_mean(
         mean = weighted / covered
     mean[covered < min_coverage * step] = np.nan
     return mean
+
+
+def counter_rate(
+    times: np.ndarray,
+    values: np.ndarray,
+    start: float,
+    n_bins: int,
+    step: float,
+) -> np.ndarray:
+    """Rate of a cumulative counter per hour over bins ``[start + k*step, +step)``.
+
+    The counter value in force at every bin edge (zero-order hold, as the
+    recorder stores it) is differenced per bin. Bins whose edges are unknown
+    (unavailable, or before the first report) or where the counter went down
+    (reset, meter replaced) come out as NaN.
+    """
+    if n_bins <= 0:
+        return np.empty(0)
+    times = np.asarray(times, dtype=float)
+    values = np.asarray(values, dtype=float)
+    order = np.argsort(times, kind="stable")
+    times, values = times[order], values[order]
+    if len(times):
+        keep = np.append(times[1:] != times[:-1], True)
+        times, values = times[keep], values[keep]
+
+    edges = start + step * np.arange(n_bins + 1)
+    pos = np.searchsorted(times, edges, side="right") - 1
+    held = np.full(len(edges), np.nan)
+    ok = pos >= 0
+    held[ok] = values[pos[ok]]
+    delta = np.diff(held)
+    delta[delta < 0] = np.nan
+    return delta / (step / 3600.0)

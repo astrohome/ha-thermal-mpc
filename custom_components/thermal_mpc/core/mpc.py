@@ -15,6 +15,10 @@ The planner minimises, per hour of horizon::
 with a projected accelerated gradient method (FISTA). Cooling is priced
 lower while the solar forecast covers the AC's draw. The first hour's duty
 is the recommendation; the rest shows the plan.
+
+When the heating input is measured in kW (a gas meter), a heating duty ``x``
+drives it at ``x * heat_capacity_kw``; the energy price stays per hour of
+full-duty heating.
 """
 
 from __future__ import annotations
@@ -66,8 +70,13 @@ def plan(
     settings: PlanSettings,
     heat_col: str | None,
     cool_col: str | None,
+    heat_capacity_kw: float | None = None,
 ) -> dict[str, Any]:
-    """Optimise hourly duties; return the plan and predicted trajectories."""
+    """Optimise hourly duties; return the plan and predicted trajectories.
+
+    ``heat_capacity_kw`` is the heating input's full-duty level (None: the
+    input is itself a duty in [0, 1]).
+    """
     n = len(inputs.t_out)
     step_h = model.step_h
     per_block = max(1, round(settings.block_h / step_h))
@@ -86,10 +95,14 @@ def plan(
         if col in model.inputs:
             base_u[:, model.inputs.index(col)] = 0.0
 
+    heat_level = heat_capacity_kw or 1.0
     # Scenario 0: free running; scenario d+1: unit duty in decision d.
     scen = np.repeat(base_u[None], len(decisions) + 1, axis=0)
     for d, (col, b) in enumerate(decisions):
-        scen[d + 1, b * per_block : (b + 1) * per_block, model.inputs.index(col)] = 1.0
+        level = heat_level if col == heat_col else 1.0
+        scen[d + 1, b * per_block : (b + 1) * per_block, model.inputs.index(col)] = (
+            level
+        )
     x0 = np.repeat(inputs.temps[None], len(scen), axis=0)
     m0 = np.repeat(inputs.mass[None], len(scen), axis=0)
     t_out = np.repeat(inputs.t_out[None], len(scen), axis=0)
@@ -150,6 +163,10 @@ def plan(
     elif now_cool >= 0.5:
         action = "cool"
     times = [inputs.start + k * step_h * 3600 for k in range(n)]
+    # Hours per block (the last block may be cut short by the horizon).
+    block_hours = np.array(
+        [min(per_block, n - b * per_block) * step_h for b in range(n_blocks)]
+    )
     return {
         "action": action,
         "duty_now": {HEAT: now_heat, COOL: now_cool},
@@ -157,6 +174,10 @@ def plan(
         "duty": {k: [round(float(v), 3) for v in arr] for k, arr in duty.items()},
         "heating_hours": float(duty[HEAT].sum() * settings.block_h),
         "cooling_hours": float(duty[COOL].sum() * settings.block_h),
+        "heat_capacity_kw": heat_capacity_kw,
+        "heating_kwh": float(duty[HEAT] @ block_hours * heat_capacity_kw)
+        if heat_capacity_kw
+        else None,
         "target": settings.target,
         "band": settings.band,
         "times": times,

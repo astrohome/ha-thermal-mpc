@@ -2,7 +2,10 @@ import numpy as np
 import pytest
 
 from custom_components.thermal_mpc.core.dataset import Dataset
-from custom_components.thermal_mpc.core.resample import time_weighted_mean
+from custom_components.thermal_mpc.core.resample import (
+    counter_rate,
+    time_weighted_mean,
+)
 from custom_components.thermal_mpc.core.signals import Signal
 
 STEP = 300.0
@@ -41,6 +44,41 @@ def test_no_data_before_first_change():
 def test_unsorted_and_duplicate_times():
     out = twm([m(2), m(-5), m(2)], [5.0, 1.0, 3.0], 1)
     assert out[0] == pytest.approx((1.0 * 2 + 3.0 * 3) / 5)
+
+
+def rate(times, values, n_bins):
+    return counter_rate(np.array(times), np.array(values), 0.0, n_bins, STEP)
+
+
+def test_counter_steady_rate():
+    # One unit per minute -> 60 units/h in every bin.
+    times = [m(k) for k in range(-1, 16)]
+    out = rate(times, [float(k) for k in range(len(times))], 3)
+    assert out.tolist() == pytest.approx([60.0] * 3)
+
+
+def test_counter_irregular_reports_average():
+    # Reports only when the counter changes: 2 units in bin 0, none in bin 1,
+    # 3 units spread over bin 2 (the last lands exactly on its end edge).
+    out = rate([m(-7), m(1), m(4), m(11), m(13), m(15)], [10, 11, 12, 13, 14, 15], 3)
+    assert out.tolist() == pytest.approx([24.0, 0.0, 36.0])
+    assert np.nansum(out) * STEP / 3600 == 5.0  # every unit counted once
+
+
+def test_counter_reset_gives_nan():
+    out = rate([m(-1), m(2), m(7)], [500.0, 501.0, 3.0], 2)
+    assert out[0] == pytest.approx(12.0)
+    assert np.isnan(out[1])
+
+
+def test_counter_unknown_edges_give_nan():
+    # Nothing known before minute 3; unavailable from minute 6 to 12.
+    out = rate([m(3), m(6), m(12)], [5.0, np.nan, 7.0], 3)
+    assert np.isnan(out).all()
+    out = rate([m(-1), m(6), m(12)], [5.0, np.nan, 7.0], 4)
+    assert out[0] == 0.0
+    assert np.isnan(out[1:3]).all()
+    assert out[3] == 0.0
 
 
 def test_signal_mapping():

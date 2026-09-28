@@ -92,6 +92,46 @@ def test_energy_weight_trades_comfort():
     assert dear["heating_hours"] < cheap["heating_hours"]
 
 
+def test_gas_mode_scales_duty_by_furnace_capacity():
+    """Gas input in kW: duty x capacity drives the model like duty did."""
+    capacity = 15.0
+    rooms = {
+        name: RoomParams(
+            p.g_out,
+            p.g_rooms,
+            {
+                ("gas" if k == "heat" else k): v / capacity if k == "heat" else v
+                for k, v in p.gains.items()
+            },
+            p.offset,
+            0,
+            0,
+            mass_h=p.mass_h,
+            mass_k=p.mass_k,
+            mass_gains=p.mass_gains,
+        )
+        for name, p in MODEL.rooms.items()
+    }
+    gas_model = ThermalModel(
+        step_h=MODEL.step_h,
+        outdoor="out",
+        inputs=["gas", "cool", "solar"],
+        rooms=rooms,
+        input_capacity={"gas": capacity},
+    )
+    s = PlanSettings(target=21, band=0.5)
+    duty = plan(MODEL, inputs(), s, "heat", "cool")
+    gas = plan(gas_model, inputs(), s, "gas", "cool", heat_capacity_kw=capacity)
+    assert gas["action"] == "heat"
+    assert gas["duty"]["heating"] == pytest.approx(duty["duty"]["heating"], abs=1e-3)
+    assert gas["heat_capacity_kw"] == capacity
+    assert gas["heating_kwh"] == pytest.approx(gas["heating_hours"] * capacity)
+    assert duty["heating_kwh"] is None
+    # Without the capacity a duty of 1 would mean 1 kW: far too weak to help.
+    weak = plan(gas_model, inputs(), s, "gas", "cool")
+    assert weak["discomfort_kh"]["planned"] > 2 * gas["discomfort_kh"]["planned"]
+
+
 def test_forecast_helpers():
     times = np.array([0.0, 1800.0, 3600.0, 7200.0])
     assert interpolate([(0, 0.0), (3600, 10.0)], times).tolist() == [0, 5, 10, 10]

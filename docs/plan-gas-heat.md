@@ -1,6 +1,15 @@
 # Plan: gas meter as the heating input
 
-Status: **planned, not started.** Nothing below is implemented yet.
+Status: **implemented.** Deviations from the design below:
+
+* The unit table, smoothing and capacity estimate live in `core/gas.py`.
+* If the furnace capacity is unknown at fit time, the model is fitted on the
+  heating duty instead of gas (not only the planner falls back), so the
+  planner always has an input it can size. Adding or removing a gas meter
+  forces a refit at the next update.
+* The meter's live state is a running total, so "now" values (heat budget,
+  panel inputs) use the latest collected rate.
+* 60 ft³/h is 18.2 kW with the table below (not ~17 kW as first written).
 
 ## Why
 

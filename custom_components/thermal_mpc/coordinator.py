@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import partial
 from typing import Any
@@ -27,6 +27,8 @@ from .const import (
     COLLECT_INTERVAL,
     CONF_CLIMATE,
     CONF_FAN,
+    CONF_GAS_METER,
+    CONF_GAS_UNIT,
     CONF_GROUP_BY_AREA,
     CONF_OUTDOOR,
     CONF_ROOMS,
@@ -36,6 +38,7 @@ from .const import (
     FIT_INTERVAL,
     FIT_RETRY_INTERVAL,
     FIT_VERSION,
+    GAS_UNIT_AUTO,
     HOLDOUT_FRACTION,
     MIN_FIT_DAYS,
     RECORDER_LAG,
@@ -46,6 +49,7 @@ from .const import (
     VALIDATION_HORIZON_H,
 )
 from .core import fusion as fusion_mod
+from .core import gas as gas_mod
 from .core.dataset import Dataset
 from .core.insight import budget, mean_budget, observed_mass, replay
 from .core.model import (
@@ -58,7 +62,7 @@ from .core.model import (
     fit,
     validate,
 )
-from .core.resample import time_weighted_mean
+from .core.resample import counter_rate, time_weighted_mean
 from .core.signals import Signal
 from .planner import async_plan
 
@@ -105,7 +109,11 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             name=DOMAIN,
             update_interval=COLLECT_INTERVAL,
         )
+        self.gas_unit: str | None = None  # unit of the gas meter
+        self.gas_kwh_per_unit = 1.0
         self.columns = self._build_columns(dict(entry.options))
+        self.heat_col = f"heating:{entry.options[CONF_CLIMATE]}"
+        self.gas_col = next((k for k in self.columns if k.startswith("gas:")), None)
         # Raw sensor columns ("room:<entity>") are grouped into zones (rooms):
         # one per area, or one per sensor when grouping is off. The model
         # works on zones; their temperature fuses the sensors.
@@ -119,10 +127,15 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         )
         self._view_cache: tuple[Any, Dataset] | None = None
         self.outdoor = next(k for k in self.columns if k.startswith("outdoor:"))
+        inputs = {k: c.sign for k, c in self.columns.items() if c.sign}
+        if self.gas_col:
+            # Gas measures the heat burned; the duty would be collinear with it.
+            # Duty is still collected (capacity, fallback, thermostat check).
+            inputs.pop(self.heat_col, None)
         self.spec = ModelSpec(
             rooms=self.rooms,
             outdoor=self.outdoor,
-            inputs={k: c.sign for k, c in self.columns.items() if c.sign},
+            inputs=inputs,
             # Sun lands on floors and walls: let it heat the thermal mass too.
             mass_inputs=tuple(k for k in self.columns if k.startswith("solar_kw:")),
         )
@@ -155,11 +168,33 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             cols[f"solar_kw:{solar}"] = Column(
                 Signal(solar, scale=scale), "Solar", POSITIVE
             )
+        if gas := opts.get(CONF_GAS_METER):
+            self.gas_unit, self.gas_kwh_per_unit = self._gas_unit(
+                gas, opts.get(CONF_GAS_UNIT)
+            )
+            sig = Signal(gas, scale=self.gas_kwh_per_unit, counter=True)
+            cols[f"gas:{gas}"] = Column(sig, "Gas heat", POSITIVE)
         for key, label in ((CONF_FAN, "Fan"), (CONF_VENTILATION, "Ventilation")):
             if eid := opts.get(key):
                 sig = Signal(eid, mapping=ON, default=0.0)
                 cols[f"{key}:{eid}"] = Column(sig, label, FREE)
         return cols
+
+    def _gas_unit(self, entity_id: str, override: str | None) -> tuple[str, float]:
+        """Meter unit (option, else the entity's) and kWh of heat per unit."""
+        if override and override != GAS_UNIT_AUTO:
+            unit = gas_mod.normalise_unit(override)
+        else:
+            reported = self._unit(entity_id)
+            unit = gas_mod.normalise_unit(reported)
+            if unit is None:
+                _LOGGER.warning(
+                    "%s has unit %r; assuming kWh (set the gas unit option)",
+                    entity_id,
+                    reported,
+                )
+        unit = unit or "kWh"
+        return unit, gas_mod.KWH_PER_UNIT[unit]
 
     def _area_id(self, entity_id: str) -> str | None:
         entry = er.async_get(self.hass).async_get(entity_id)
@@ -209,7 +244,13 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         if self._view_cache is None or self._view_cache[0] != key:
             self._view_cache = (
                 key,
-                fusion_mod.view(self.dataset, self.zones, self.fusion, self.solar_col),
+                _view(
+                    self.dataset,
+                    self.zones,
+                    self.fusion,
+                    self.solar_col,
+                    self.gas_col,
+                ),
             )
         return self._view_cache[1]
 
@@ -252,12 +293,21 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             ):
                 self.result.model = model
                 self.result.validation = data.get("validation", {})
-                # A model from older fitting code is shown until the refit,
-                # which happens at the first update (last_fit unset).
-                if data.get("fit_version") == FIT_VERSION and (
-                    last := data.get("last_fit")
+                # A model from older fitting code, or for other inputs (a gas
+                # meter added or removed), is shown until the refit, which
+                # happens at the first update (last_fit unset).
+                if (
+                    data.get("fit_version") == FIT_VERSION
+                    and self._inputs_match(model)
+                    and (last := data.get("last_fit"))
                 ):
                     self.result.last_fit = dt_util.parse_datetime(last)
+
+    def _inputs_match(self, model: ThermalModel) -> bool:
+        """Whether ``model`` was fitted for the configured inputs."""
+        fitted = set(model.inputs) | set(model.unused_inputs)
+        fallback = _duty_spec(self.spec, self.gas_col, self.heat_col)
+        return fitted in (set(self.spec.inputs), set(fallback.inputs))
 
     def _data_to_save(self) -> dict[str, Any]:
         return {
@@ -353,9 +403,8 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             rows = [s for s in raw if isinstance(s, State)]
             times = np.array([s.last_updated.timestamp() for s in rows])
             values = np.array([col.signal.value(s.state, s.attributes) for s in rows])
-            block[key] = time_weighted_mean(
-                times, values, start, n_bins, float(STEP_SECONDS)
-            )
+            resample = counter_rate if col.signal.counter else time_weighted_mean
+            block[key] = resample(times, values, start, n_bins, float(STEP_SECONDS))
         return block
 
     # ---------------------------------------------------------------------- fit
@@ -386,7 +435,13 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         self.result.last_attempt = dt_util.utcnow()
         try:
             model, validation = await self.hass.async_add_executor_job(
-                _fit_and_validate, self.dataset, self.spec, self.zones, self.solar_col
+                _fit_and_validate,
+                self.dataset,
+                self.spec,
+                self.zones,
+                self.solar_col,
+                self.gas_col,
+                self.heat_col,
             )
         except NotEnoughDataError as err:
             self.result.error = f"Not enough data: {err}"
@@ -419,7 +474,17 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         Falls back to the latest dataset value when an entity is unavailable.
         """
         out = {}
+        view = self.view() if self.dataset.rows else None
         for key, col in self.columns.items():
+            if col.signal.counter:
+                # A meter's state is its running total; the rate is only
+                # known from the collected (smoothed) data.
+                out[key] = (
+                    _last_known(view.columns[key])
+                    if view is not None and key in view.columns
+                    else float("nan")
+                )
+                continue
             state = self.hass.states.get(col.signal.entity_id)
             value = (
                 col.signal.value(state.state, state.attributes)
@@ -450,7 +515,6 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
                 else 0.0
             )
         zones_now = fusion_mod.fuse_now(out, self.zones, self.fusion, sun_now)
-        view = self.view() if self.dataset.rows else None
         for zone, value in zones_now.items():
             if math.isnan(value) and view is not None:
                 value = _last_known(view.columns[zone])
@@ -548,15 +612,53 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         }
 
 
+def _view(
+    raw: Dataset,
+    zones: fusion_mod.Zones,
+    fusion: fusion_mod.Fusion,
+    solar: str | None,
+    gas: str | None,
+) -> Dataset:
+    """Dataset with fused zone temperatures and a smoothed gas rate."""
+    ds = fusion_mod.view(raw, zones, fusion, solar)
+    if gas and gas in ds.columns:
+        ds.columns[gas] = gas_mod.smooth(ds.columns[gas])
+    return ds
+
+
+def _duty_spec(spec: ModelSpec, gas: str | None, duty: str) -> ModelSpec:
+    """``spec`` with the gas input replaced by the thermostat's heating duty."""
+    if not gas or gas not in spec.inputs:
+        return spec
+    inputs = {duty if k == gas else k: s for k, s in spec.inputs.items()}
+    return replace(spec, inputs=inputs)
+
+
 def _fit_and_validate(
     raw: Dataset,
     spec: ModelSpec,
     zones: fusion_mod.Zones,
     solar: str | None,
+    gas: str | None = None,
+    duty: str | None = None,
 ) -> tuple[ThermalModel, dict[str, list[float | None]]]:
     # Calibrate sensors against each other, then fit on fused room temps.
     cal = fusion_mod.learn(raw, zones, solar)
-    ds = fusion_mod.view(raw, zones, cal, solar)
+    ds = _view(raw, zones, cal, solar, gas)
+    capacity: dict[str, float] = {}
+    if gas and duty and gas in spec.inputs:
+        cap = gas_mod.capacity(
+            ds.columns.get(gas, np.zeros(0)),
+            ds.columns.get(duty, np.zeros(0)),
+            ds.step / 3600,
+        )
+        if cap is None:
+            # Full fire not seen yet, so a planned duty cannot be turned into
+            # kW: model the heating duty instead until it has been.
+            _LOGGER.info("Furnace capacity not known yet; modelling heating duty")
+            spec = _duty_spec(spec, gas, duty)
+        else:
+            capacity[gas] = cap
     split = int(ds.rows * (1 - HOLDOUT_FRACTION))
     holdout_model = fit(ds, spec, slice(0, split))
     validation = validate(
@@ -564,6 +666,7 @@ def _fit_and_validate(
     )
     model = fit(ds, spec)
     model.fusion = fusion_mod.to_dict(cal)
+    model.input_capacity = {k: v for k, v in capacity.items() if k in model.inputs}
     return model, validation
 
 

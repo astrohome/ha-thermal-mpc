@@ -37,6 +37,8 @@ async def async_setup_entry(
         RecommendedSetpointSensor(coordinator),
         PlannedHeatingSensor(coordinator),
     ]
+    if coordinator.gas_col:
+        entities.append(PlannedGasSensor(coordinator))
     entities += [TimeConstantSensor(coordinator, room) for room in coordinator.rooms]
     # Drop sensors for rooms removed in the options flow.
     registry = er.async_get(hass)
@@ -243,6 +245,8 @@ class RecommendedActionSensor(ThermalEntity, SensorEntity):
             "agrees_with_thermostat": busy == plan["action"],
             "heating_hours_24h": _r(plan["heating_hours"], 2),
             "cooling_hours_24h": _r(plan["cooling_hours"], 2),
+            "planned_gas": _r(plan.get("gas_volume"), 2),
+            "planned_cost": _r(plan.get("gas_cost"), 2),
             "target": plan["target"],
             "target_source": plan.get("target_source"),
             "band": plan["band"],
@@ -292,3 +296,33 @@ class PlannedHeatingSensor(ThermalEntity, SensorEntity):
         """Planned heating hours."""
         plan = self.coordinator.plan
         return None if plan is None else _r(plan["heating_hours"], 2)
+
+
+class PlannedGasSensor(ThermalEntity, SensorEntity):
+    """Gas the plan expects to burn over the next 24 h, in the meter's unit."""
+
+    _attr_translation_key = "planned_gas"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_suggested_display_precision = 1
+
+    def __init__(self, coordinator: ThermalCoordinator) -> None:
+        """Initialise."""
+        super().__init__(coordinator, "planned_gas")
+        self._attr_native_unit_of_measurement = coordinator.gas_unit
+
+    @property
+    def native_value(self) -> float | None:
+        """Planned gas volume (None until the furnace capacity is known)."""
+        plan = self.coordinator.plan
+        return None if plan is None else _r(plan.get("gas_volume"), 2)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Heat, cost and the furnace capacity behind the figure."""
+        plan = self.coordinator.plan or {}
+        return {
+            "heating_kwh": _r(plan.get("heating_kwh"), 2),
+            "cost": _r(plan.get("gas_cost"), 2),
+            "currency": plan.get("currency"),
+            "capacity_kw": _r(plan.get("heat_capacity_kw"), 2),
+        }

@@ -18,6 +18,7 @@ class Signal:
     mapping: Mapping[str, float] | None = None
     default: float | None = None
     scale: float = 1.0
+    counter: bool = False  # cumulative meter: resample as a rate per hour
 
     def value(self, state: str | None, attributes: Mapping[str, Any]) -> float:
         """Convert one recorded state to a number (NaN when unusable)."""

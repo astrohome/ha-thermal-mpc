@@ -19,6 +19,10 @@ CONF_VENTILATION: Final = "ventilation"
 CONF_GROUP_BY_AREA: Final = "group_by_area"
 CONF_WEATHER_FORECAST: Final = "weather_forecast"
 CONF_SOLAR_FORECAST: Final = "solar_forecast"
+CONF_GAS_METER: Final = "gas_meter"
+CONF_GAS_UNIT: Final = "gas_unit"
+CONF_GAS_PRICE: Final = "gas_price"
+GAS_UNIT_AUTO: Final = "auto"
 CONF_TARGET: Final = "target"
 CONF_BAND: Final = "band"
 CONF_ENERGY_WEIGHT: Final = "energy_weight"
@@ -48,7 +52,7 @@ VALIDATION_HORIZON_H: Final = 6.0
 
 STORAGE_VERSION: Final = 1
 # Bump when fitting changes so stored models are refitted at the next update.
-FIT_VERSION: Final = 4
+FIT_VERSION: Final = 5
 
 PANEL_URL_PATH: Final = "thermal-model"
 PANEL_COMPONENT: Final = "thermal-mpc-panel"
