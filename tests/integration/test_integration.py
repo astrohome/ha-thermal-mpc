@@ -128,9 +128,11 @@ async def test_backfill_from_recorder(hass: HomeAssistant, freezer) -> None:
 async def test_added_sensor_is_backfilled(hass: HomeAssistant, freezer) -> None:
     """A sensor added in the options gets its recorder history, not just NaN."""
     start = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
+    # Before the dataset starts, as for a sensor that has been around a while.
+    freezer.move_to(start - timedelta(hours=4))
+    hass.states.async_set("sensor.bedroom", "19.0")
     freezer.move_to(start - timedelta(hours=3))
     hass.states.async_set("sensor.living", "20.0")
-    hass.states.async_set("sensor.bedroom", "19.0")
     hass.states.async_set("weather.home", "cloudy", {"temperature": -5.0})
     hass.states.async_set("climate.thermostat", "heat", {"hvac_action": "idle"})
     await hass.async_block_till_done(wait_background_tasks=True)
