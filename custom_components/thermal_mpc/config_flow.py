@@ -118,7 +118,7 @@ async def _entities_schema(hass: HomeAssistant) -> vol.Schema:
 
 
 def _number(
-    minimum: float, maximum: float, step: float, unit: str | None = None
+    minimum: float, maximum: float, step: float | str, unit: str | None = None
 ) -> NumberSelector:
     config = NumberSelectorConfig(
         min=minimum, max=maximum, step=step, mode=NumberSelectorMode.BOX
@@ -138,7 +138,7 @@ PLANNER_SCHEMA = vol.Schema(
         vol.Required(CONF_SPREAD_WEIGHT, default=DEFAULT_SPREAD_WEIGHT): _number(
             0, 5, 0.05
         ),
-        vol.Optional(CONF_GAS_PRICE): _number(0, 1000, 0.0001),
+        vol.Optional(CONF_GAS_PRICE): _number(0, 1000, "any"),
     }
 )
 
