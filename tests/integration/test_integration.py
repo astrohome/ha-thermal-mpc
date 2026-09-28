@@ -125,6 +125,46 @@ async def test_backfill_from_recorder(hass: HomeAssistant, freezer) -> None:
     assert float(training.state) == pytest.approx(3 / 24, abs=0.01)
 
 
+async def test_added_sensor_is_backfilled(hass: HomeAssistant, freezer) -> None:
+    """A sensor added in the options gets its recorder history, not just NaN."""
+    start = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
+    freezer.move_to(start - timedelta(hours=3))
+    hass.states.async_set("sensor.living", "20.0")
+    hass.states.async_set("sensor.bedroom", "19.0")
+    hass.states.async_set("weather.home", "cloudy", {"temperature": -5.0})
+    hass.states.async_set("climate.thermostat", "heat", {"hvac_action": "idle"})
+    await hass.async_block_till_done(wait_background_tasks=True)
+    freezer.move_to(start - timedelta(minutes=60))
+    hass.states.async_set("sensor.bedroom", "18.0")
+    await async_wait_recording_done(hass)
+
+    freezer.move_to(start + timedelta(minutes=5))
+    first = {k: v for k, v in OPTIONS.items() if k in (CONF_OUTDOOR, CONF_CLIMATE)}
+    first[CONF_ROOMS] = ["sensor.living"]
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Thermal model", options=first, unique_id="x"
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = entry.runtime_data
+    assert "room:sensor.bedroom" not in coordinator.dataset.columns
+    coordinator.async_schedule_save()
+    await coordinator._store._async_handle_write_data()  # noqa: SLF001
+
+    hass.config_entries.async_update_entry(
+        entry, options={**first, CONF_ROOMS: ["sensor.living", "sensor.bedroom"]}
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    ds = entry.runtime_data.dataset
+    bedroom = ds.columns["room:sensor.bedroom"]
+    assert ds.end == pytest.approx(start.timestamp())
+    assert bedroom[-1] == 18.0
+    assert bedroom[-13] == 19.0
+    assert np.isfinite(bedroom[-36:]).all()
+    assert entry.runtime_data.training_days == pytest.approx(3 / 24, abs=0.01)
+
+
 async def test_fit_updates_sensors(hass: HomeAssistant, hass_ws_client) -> None:
     entry = MockConfigEntry(
         domain=DOMAIN, title="Thermal model", options=OPTIONS, unique_id="x"

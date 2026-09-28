@@ -145,6 +145,9 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         self._collect_lock = asyncio.Lock()
         # How far the recorder has been read, even if nothing usable was found.
         self._collected_until: float | None = None
+        # Columns whose recorder history has been read over the whole dataset
+        # span. Others (a sensor added in the options) are backfilled.
+        self._backfilled: set[str] = set()
         self._store: Store[dict[str, Any]] = Store(
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}"
         )
@@ -280,6 +283,8 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         if data.get("dataset"):
             self.dataset = Dataset.from_dict(data["dataset"])
             self.dataset.keep_columns(set(self.columns))
+        # Missing in storage from older versions: backfill everything once.
+        self._backfilled = set(data.get("backfilled", [])) & set(self.columns)
         if data.get("model"):
             model = ThermalModel.from_dict(data["model"])
             # A model for a different set of rooms is useless; refit instead.
@@ -315,6 +320,7 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             "model": self.result.model.to_dict() if self.result.model else None,
             "validation": self.result.validation,
             "fit_version": FIT_VERSION,
+            "backfilled": sorted(self._backfilled),
             "last_fit": self.result.last_fit.isoformat()
             if self.result.last_fit
             else None,
@@ -352,7 +358,12 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
     async def _async_collect(self) -> None:
         """Pull everything the recorder has since the dataset's end."""
         async with self._collect_lock:
+            first = self.dataset.rows == 0
             await self._async_collect_locked()
+            if first:  # the whole span was just read for every column
+                self._backfilled = set(self.columns)
+            else:
+                await self._async_backfill_locked()
 
     async def _async_collect_locked(self) -> None:
         step = float(STEP_SECONDS)
@@ -382,9 +393,49 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         self.dataset.trim(int(RETENTION_DAYS * 86400 / step))
         self._collected_until = max(start, end)
 
-    def _fetch_block(self, start: float, end: float) -> dict[str, np.ndarray]:
-        """Read ``[start, end)`` from the recorder and resample (runs in executor)."""
-        entity_ids = sorted({c.signal.entity_id for c in self.columns.values()})
+    async def _async_backfill_locked(self) -> None:
+        """Read history the dataset lacks for newly configured columns.
+
+        Collection only moves forward, so a sensor added in the options
+        would otherwise start empty although the recorder has its past.
+        Only missing values are filled.
+        """
+        keys = [k for k in self.columns if k not in self._backfilled]
+        ds = self.dataset
+        if not keys or ds.start is None or ds.end is None:
+            self._backfilled |= set(keys)
+            return
+        step = ds.step
+        start = max(ds.start, ds.end - BACKFILL.total_seconds())
+        start = ds.start + math.ceil((start - ds.start) / step) * step
+        _LOGGER.info("Backfilling %s from the recorder", ", ".join(keys))
+        recorder = get_instance(self.hass)
+        chunk = CHUNK.total_seconds()
+        t = start
+        while t < ds.end:
+            t_next = min(t + chunk, ds.end)
+            block = await recorder.async_add_executor_job(
+                partial(self._fetch_block, t, t_next, keys)
+            )
+            i = round((t - ds.start) / step)
+            for key, values in block.items():
+                col = ds.columns.setdefault(key, np.full(ds.rows, np.nan))
+                part = col[i : i + len(values)]
+                missing = np.isnan(part)
+                part[missing] = values[missing]
+            t = t_next
+        self._backfilled |= set(keys)
+        self._view_cache = None
+
+    def _fetch_block(
+        self, start: float, end: float, keys: list[str] | None = None
+    ) -> dict[str, np.ndarray]:
+        """Read ``[start, end)`` from the recorder and resample (runs in executor).
+
+        ``keys`` limits the columns read (default: all).
+        """
+        columns = {k: self.columns[k] for k in keys} if keys else self.columns
+        entity_ids = sorted({c.signal.entity_id for c in columns.values()})
         states = history.get_significant_states(
             self.hass,
             dt_util.utc_from_timestamp(start),
@@ -398,7 +449,7 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         )
         n_bins = round((end - start) / STEP_SECONDS)
         block = {}
-        for key, col in self.columns.items():
+        for key, col in columns.items():
             raw = states.get(col.signal.entity_id, [])
             rows = [s for s in raw if isinstance(s, State)]
             times = np.array([s.last_updated.timestamp() for s in rows])
