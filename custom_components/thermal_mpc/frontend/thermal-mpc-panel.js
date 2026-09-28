@@ -52,6 +52,14 @@ function diverging(pal, dev, span) {
   const t = Math.max(-1, Math.min(1, dev / span));
   return t >= 0 ? mix(pal.mid, pal.gain, t) : mix(pal.mid, pal.loss, -t);
 }
+/** Budget inputs delivered through the ducts (furnace / AC). */
+const isHvac = (k) => /^(gas|heating|cooling):/.test(k);
+/** Net K/h a room gets from the HVAC (heating +, cooling -), or null. */
+function hvacTerm(b) {
+  const vals = Object.entries(b?.inputs || {}).filter(([k]) => isHvac(k)).map(([, v]) => v);
+  if (!vals.length || vals.some((v) => v == null)) return null;
+  return vals.reduce((a, v) => a + v, 0);
+}
 function relTime(iso) {
   if (!iso) return "never";
   const mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
@@ -203,6 +211,8 @@ class ThermalMpcPanel extends HTMLElement {
         ${this._diagram(e)}
         <p class="note">Arrows point the way heat moves. Thickness and labels give how fast that
         path alone changes the room's temperature, in K/h (kelvin per hour).
+        The furnace reaches every room through the ducts; its arrows show the
+        heat each room gets from it.
         The stripe on each room shows how far it is from the house average
         (<span class="sw" style="background:${this._pal.loss}"></span> cooler,
         <span class="sw" style="background:${this._pal.gain}"></span> warmer).</p>
@@ -231,7 +241,9 @@ class ThermalMpcPanel extends HTMLElement {
     const arcRoom = cols === 1 && n > 2 ? 90 : 0;
     const width = PAD * 2 + cols * BOX_W + (cols - 1) * GAP_X + arcRoom;
     const top = PAD + BAND_H + 70;
-    const height = top + rows * BOX_H + (rows - 1) * GAP_Y + (cols > 2 ? 80 : 30);
+    const bottom = top + rows * BOX_H + (rows - 1) * GAP_Y;
+    const furnaceY = bottom + (cols > 2 ? 80 : 30) + 40;
+    const height = furnaceY + BAND_H + PAD;
     const pos = {};
     rooms.forEach((r, i) => {
       const c = i % cols;
@@ -248,6 +260,8 @@ class ThermalMpcPanel extends HTMLElement {
       if (!b) continue;
       if (b.outdoor != null) mags.push(Math.abs(b.outdoor));
       for (const v of Object.values(b.rooms || {})) if (v != null) mags.push(Math.abs(v));
+      const h = hvacTerm(b);
+      if (h != null) mags.push(Math.abs(h));
     }
     const maxMag = Math.max(0.05, ...mags);
     const widthFor = (v) => 1.5 + 9 * Math.min(1, Math.abs(v) / maxMag);
@@ -274,6 +288,26 @@ class ThermalMpcPanel extends HTMLElement {
       const [ya, yb] = v < 0 ? [y1, y0] : [y0, y1];
       links += this._arrow(`M${cx},${ya}L${cx},${yb}`, v, widthFor(v), speedFor(v), pal,
         `${r.name} ↔ outdoor: ${signed(v, 3)} K/h for the room`);
+      labels.push([cx + 10, (y0 + y1) / 2 + 4, `${fmt(Math.abs(v))} K/h`, "start", "val"]);
+    }
+    // Furnace -> room through the ducts. Rooms in the last row connect to the
+    // band; higher rows get a short stub below the box.
+    for (const r of rooms) {
+      const v = hvacTerm(this._budget(e, r.id));
+      const p = pos[r.id];
+      const cx = p.x + 70;
+      const y1 = p.y + BOX_H;
+      const y0 = p.row === rows - 1 ? furnaceY : y1 + 40;
+      // Beside the stub end, clear of the next row's "Outdoor" stubs.
+      if (p.row < rows - 1) labels.push([cx - 8, y0 + 4, "Furnace", "end", "mini"]);
+      if (v == null || Math.abs(v) < 1e-4) {
+        links += `<line x1="${cx}" y1="${y0}" x2="${cx}" y2="${y1}" class="nolink"/>`;
+        continue;
+      }
+      // Positive = warmed through the ducts: arrow points up into the room.
+      const [ya, yb] = v > 0 ? [y0, y1] : [y1, y0];
+      links += this._arrow(`M${cx},${ya}L${cx},${yb}`, v, widthFor(v), speedFor(v), pal,
+        `${r.name} ← furnace (ducts): ${signed(v, 3)} K/h for the room`);
       labels.push([cx + 10, (y0 + y1) / 2 + 4, `${fmt(Math.abs(v))} K/h`, "start", "val"]);
     }
     // Room <-> room, drawn once per pair from the warmer (sending) side.
@@ -366,7 +400,7 @@ class ThermalMpcPanel extends HTMLElement {
       const b = this._budget(e, r.id);
       const dev = r.temperature != null && mean != null ? r.temperature - mean : null;
       const inputs = Object.entries({ ...(b?.inputs || {}), ...(b?.mass != null ? { __mass: b.mass } : {}) })
-        .filter(([, v]) => v != null && Math.abs(v) >= 0.005)
+        .filter(([k, v]) => !isHvac(k) && v != null && Math.abs(v) >= 0.005)
         .sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]))
         .slice(0, 2);
       const tau = r.tau_out_h != null ? `τ ${fmt(r.tau_out_h, 0)} h` : "τ –";
@@ -385,9 +419,11 @@ class ThermalMpcPanel extends HTMLElement {
         </g>`;
     }).join("");
 
+    const furnaceLabel = this._furnaceLabel(e);
+
     return `
       <div class="diagram">
-        <svg viewBox="0 0 ${width} ${height}" style="max-width:${width}px" role="img" aria-label="Heat flow between rooms and outdoors">
+        <svg viewBox="0 0 ${width} ${height}" style="max-width:${width}px" role="img" aria-label="Heat flow between rooms, outdoors and the furnace">
           <defs>
             <marker id="arrowhead" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="4" markerHeight="4" orient="auto-start-reverse">
               <path d="M0,0L10,5L0,10Z" fill="${pal.flow}"/>
@@ -395,10 +431,29 @@ class ThermalMpcPanel extends HTMLElement {
           </defs>
           <rect x="${PAD}" y="${PAD}" width="${width - 2 * PAD}" height="${BAND_H}" rx="10" class="band"/>
           <text class="name" x="${PAD + 14}" y="${PAD + 28}">Outdoor · ${fmt(e.outdoor?.temperature, 1)} °C</text>
+          <rect x="${PAD}" y="${furnaceY}" width="${width - 2 * PAD}" height="${BAND_H}" rx="10" class="band"/>
+          <text class="name" x="${PAD + 14}" y="${furnaceY + 28}">${esc(furnaceLabel)}</text>
           ${links}
           ${boxes}
         </svg>
       </div>`;
+  }
+
+  /** "Furnace · heating · 18.2 kW gas" (now) or "Furnace (ducts)" (24 h). */
+  _furnaceLabel(e) {
+    const keys = Object.keys(e.labels || {});
+    const name = keys.some((k) => k.startsWith("cooling:")) &&
+      Object.values(e.budget_24h || {}).some((b) =>
+        Object.entries(b.inputs || {}).some(([k, v]) => k.startsWith("cooling:") && Math.abs(v ?? 0) >= 1e-3))
+      ? "Furnace / AC" : "Furnace";
+    if (this._mode !== "now") return `${name} · through the ducts`;
+    const parts = [name];
+    const action = e.plan?.thermostat_action;
+    if (action) parts.push(action);
+    const gasKey = keys.find((k) => k.startsWith("gas:"));
+    const kw = gasKey ? e.inputs?.[gasKey] : null;
+    if (kw != null) parts.push(`${fmt(kw, 1)} kW gas`);
+    return parts.join(" · ");
   }
 
   _arrow(d, v, w, speed, pal, tip) {

@@ -88,7 +88,8 @@ validation and the full training set for offline analysis.
 
 The integration adds a **Thermal model** entry to the sidebar. It shows:
 
-* **Where the heat goes.** Rooms and outdoors drawn as a flow diagram. Animated
+* **Where the heat goes.** Rooms, outdoors and the furnace drawn as a flow
+  diagram (the furnace feeds every room through the ducts). Animated
   arrows point the way heat is moving, and their thickness and labels give how
   fast each path changes the room's temperature (K/h). You can view it right
   now or as a 24 h average. A colored stripe shows how far each room is from
