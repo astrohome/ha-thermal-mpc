@@ -5,14 +5,18 @@
         "title": "Describe the house",
         "description": "Pick one temperature sensor per room (dedicated wall sensors work best), an outdoor temperature source, and the thermostat. Solar power is used as a proxy for sunlight; fan and ventilation are optional on/off signals such as an HRV status. History already in the recorder is used for training straight away.",
         "data": {
-          "rooms": "Room temperature sensors",
+          "rooms": "Room temperature sensors (several per room are fine)",
           "outdoor": "Outdoor temperature (sensor or weather entity)",
           "climate": "Thermostat",
           "solar": "Solar power",
           "fan": "Fan running",
           "ventilation": "Ventilation (HRV/ERV) running",
           "weather_forecast": "Weather forecast (if the outdoor source is not a weather entity)",
-          "solar_forecast": "Solar production forecast"
+          "solar_forecast": "Solar production forecast",
+          "group_by_area": "Treat sensors in the same area as one room"
+        },
+        "data_description": {
+          "group_by_area": "Sensors in one area are calibrated against each other (offset, sun exposure, noise) and blended into one room temperature."
         }
       }
     },
@@ -30,14 +34,18 @@
         "title": "Describe the house",
         "description": "Changing a room or source starts a new data column for it; data for removed entities is dropped.",
         "data": {
-          "rooms": "Room temperature sensors",
+          "rooms": "Room temperature sensors (several per room are fine)",
           "outdoor": "Outdoor temperature (sensor or weather entity)",
           "climate": "Thermostat",
           "solar": "Solar power",
           "fan": "Fan running",
           "ventilation": "Ventilation (HRV/ERV) running",
           "weather_forecast": "Weather forecast (if the outdoor source is not a weather entity)",
-          "solar_forecast": "Solar production forecast"
+          "solar_forecast": "Solar production forecast",
+          "group_by_area": "Treat sensors in the same area as one room"
+        },
+        "data_description": {
+          "group_by_area": "Sensors in one area are calibrated against each other (offset, sun exposure, noise) and blended into one room temperature."
         }
       },
       "planner": {

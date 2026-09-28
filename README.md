@@ -29,6 +29,23 @@ background. After that it collects every 15 minutes and keeps its own
 5-minute training set in `.storage` for 120 days, so training data outlives
 the recorder's purge window.
 
+### Several sensors per room
+
+Add as many temperature sensors as you have. Sensors in the same Home
+Assistant **area** are treated as one room (you can turn this off in the
+options). For each sensor the integration learns, by comparing it with the
+others in the room:
+
+* **offset:** it reads consistently high or low,
+* **sun exposure:** it warms up when the sun is out (a plant pot by a
+  window); the least exposed sensor counts as shaded,
+* **noise:** jumpy or coarse sensors (a thermostat's 0.5 °C steps) count
+  less.
+
+The room temperature is the calibrated, noise-weighted blend of whichever
+sensors are online, so one sensor dropping out doesn't break the room. The
+panel's room cards list each sensor's share, offset, sun exposure and noise.
+
 ## What you get
 
 | Entity | Meaning |

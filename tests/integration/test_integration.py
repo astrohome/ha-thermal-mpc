@@ -49,7 +49,7 @@ async def test_config_flow(hass: HomeAssistant) -> None:
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], OPTIONS)
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["options"] == OPTIONS
+    assert result["options"] == {**OPTIONS, "group_by_area": True}
     await hass.async_block_till_done(wait_background_tasks=True)
 
 
@@ -209,8 +209,8 @@ async def test_fit_updates_sensors(hass: HomeAssistant, hass_ws_client) -> None:
     assert overview["status"] == "trained"
     assert {r["name"] for r in overview["rooms"]} == {"Living", "Bedroom"}
     assert set(overview["budget_24h"]) == {
-        "room:sensor.living",
-        "room:sensor.bedroom",
+        "zone:sensor.living",
+        "zone:sensor.bedroom",
     }
     assert len(overview["replay"]["times"]) == 48 * 12
     assert len(overview["plan"]["duty"]["heating"]) == 24

@@ -14,6 +14,8 @@ import numpy as np
 from homeassistant.components.recorder import get_instance, history
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, State
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -25,6 +27,7 @@ from .const import (
     COLLECT_INTERVAL,
     CONF_CLIMATE,
     CONF_FAN,
+    CONF_GROUP_BY_AREA,
     CONF_OUTDOOR,
     CONF_ROOMS,
     CONF_SOLAR,
@@ -42,6 +45,7 @@ from .const import (
     STORAGE_VERSION,
     VALIDATION_HORIZON_H,
 )
+from .core import fusion as fusion_mod
 from .core.dataset import Dataset
 from .core.insight import budget, mean_budget, observed_mass, replay
 from .core.model import (
@@ -102,7 +106,18 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             update_interval=COLLECT_INTERVAL,
         )
         self.columns = self._build_columns(dict(entry.options))
-        self.rooms = [k for k in self.columns if k.startswith("room:")]
+        # Raw sensor columns ("room:<entity>") are grouped into zones (rooms):
+        # one per area, or one per sensor when grouping is off. The model
+        # works on zones; their temperature fuses the sensors.
+        self.sensors = [k for k in self.columns if k.startswith("room:")]
+        self.zones, self.zone_labels = self._build_zones(
+            entry.options.get(CONF_GROUP_BY_AREA, True)
+        )
+        self.rooms = list(self.zones)
+        self.solar_col = next(
+            (k for k in self.columns if k.startswith("solar_kw:")), None
+        )
+        self._view_cache: tuple[Any, Dataset] | None = None
         self.outdoor = next(k for k in self.columns if k.startswith("outdoor:"))
         self.spec = ModelSpec(
             rooms=self.rooms,
@@ -146,6 +161,58 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
                 cols[f"{key}:{eid}"] = Column(sig, label, FREE)
         return cols
 
+    def _area_id(self, entity_id: str) -> str | None:
+        entry = er.async_get(self.hass).async_get(entity_id)
+        if entry is None:
+            return None
+        if entry.area_id:
+            return entry.area_id
+        if entry.device_id and (
+            device := dr.async_get(self.hass).async_get(entry.device_id)
+        ):
+            return device.area_id
+        return None
+
+    def _build_zones(
+        self, by_area: bool
+    ) -> tuple[dict[str, list[str]], dict[str, str]]:
+        zones: dict[str, list[str]] = {}
+        labels: dict[str, str] = {}
+        areas = ar.async_get(self.hass)
+        for col in self.sensors:
+            eid = col.removeprefix("room:")
+            area_id = self._area_id(eid) if by_area else None
+            if area_id:
+                key = f"zone:{area_id}"
+                area = areas.async_get_area(area_id)
+                labels[key] = area.name if area else area_id
+            else:
+                key = f"zone:{eid}"
+                labels[key] = self.columns[col].label
+            zones.setdefault(key, []).append(col)
+        return zones, labels
+
+    @property
+    def fusion(self) -> fusion_mod.Fusion:
+        """Current sensor calibration (from the fitted model, else neutral)."""
+        model = self.result.model
+        return fusion_mod.from_dict(model.fusion) if model else {}
+
+    def view(self) -> Dataset:
+        """Dataset with fused zone temperatures added (cached)."""
+        key = (
+            id(self.dataset),
+            self.dataset.rows,
+            self.dataset.start,
+            id(self.result.model),
+        )
+        if self._view_cache is None or self._view_cache[0] != key:
+            self._view_cache = (
+                key,
+                fusion_mod.view(self.dataset, self.zones, self.fusion, self.solar_col),
+            )
+        return self._view_cache[1]
+
     def _name(self, entity_id: str) -> str:
         state = self.hass.states.get(entity_id)
         if state and state.name:
@@ -175,7 +242,14 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         if data.get("model"):
             model = ThermalModel.from_dict(data["model"])
             # A model for a different set of rooms is useless; refit instead.
-            if set(model.rooms) == set(self.rooms) and model.outdoor == self.outdoor:
+            if (
+                set(model.rooms) == set(self.rooms)
+                and model.outdoor == self.outdoor
+                and all(
+                    set(model.fusion.get(z, {})) <= set(s)
+                    for z, s in self.zones.items()
+                )
+            ):
                 self.result.model = model
                 self.result.validation = data.get("validation", {})
                 # A model from older fitting code is shown until the refit,
@@ -290,11 +364,12 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
     def training_days(self) -> float:
         """Days of rows where every room and the outdoor temperature are known."""
         needed = [*self.rooms, self.outdoor]
-        if not self.dataset.rows or any(k not in self.dataset.columns for k in needed):
+        if not self.dataset.rows or self.outdoor not in self.dataset.columns:
             return 0.0
-        stacked = np.vstack([self.dataset.columns[k] for k in needed])
+        ds = self.view()
+        stacked = np.vstack([ds.columns[k] for k in needed])
         complete = int((~np.isnan(stacked)).all(axis=0).sum())
-        return complete * self.dataset.step / 86400
+        return complete * ds.step / 86400
 
     def _fit_due(self) -> bool:
         if self.training_days < MIN_FIT_DAYS:
@@ -311,7 +386,7 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         self.result.last_attempt = dt_util.utcnow()
         try:
             model, validation = await self.hass.async_add_executor_job(
-                _fit_and_validate, self.dataset, self.spec
+                _fit_and_validate, self.dataset, self.spec, self.zones, self.solar_col
             )
         except NotEnoughDataError as err:
             self.result.error = f"Not enough data: {err}"
@@ -330,7 +405,9 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         self.result.failed = False
 
     def label(self, column: str) -> str:
-        """Human-readable name of a dataset column."""
+        """Human-readable name of a dataset column or zone."""
+        if column in self.zone_labels:
+            return self.zone_labels[column]
         col = self.columns.get(column)
         return col.label if col else column
 
@@ -349,10 +426,59 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
                 if state
                 else float("nan")
             )
-            if math.isnan(value) and key in self.dataset.columns:
-                known = self.dataset.columns[key][~np.isnan(self.dataset.columns[key])]
-                value = float(known[-1]) if known.size else float("nan")
-            out[key] = value
+            # Room sensors stay NaN when offline: fusion uses the others.
+            if (
+                math.isnan(value)
+                and key in self.dataset.columns
+                and key not in self.sensors
+            ):
+                out[key] = _last_known(self.dataset.columns[key])
+            else:
+                out[key] = value
+        # Zone (room) temperatures from the calibrated sensors.
+        sun_now = 0.0
+        if self.solar_col and self.solar_col in self.dataset.columns:
+            sun_now = (
+                float(
+                    fusion_mod.smooth_sun(
+                        self.dataset.columns[self.solar_col],
+                        self.dataset.step / 3600,
+                        self.dataset.rows,
+                    )[-1]
+                )
+                if self.dataset.rows
+                else 0.0
+            )
+        zones_now = fusion_mod.fuse_now(out, self.zones, self.fusion, sun_now)
+        view = self.view() if self.dataset.rows else None
+        for zone, value in zones_now.items():
+            if math.isnan(value) and view is not None:
+                value = _last_known(view.columns[zone])
+            out[zone] = value
+        return out
+
+    def sensor_info(self, zone: str, live: dict[str, float]) -> list[dict[str, Any]]:
+        """Per-sensor calibration and share of the room reading."""
+        cals = self.fusion.get(zone, {})
+        weights = {
+            s: cals.get(s, fusion_mod.SensorCal()).weight for s in self.zones[zone]
+        }
+        online = [s for s in self.zones[zone] if not math.isnan(live.get(s, math.nan))]
+        total = sum(weights[s] for s in online) or 1.0
+        out = []
+        for s in self.zones[zone]:
+            cal = cals.get(s)
+            out.append(
+                {
+                    "entity_id": self.columns[s].signal.entity_id,
+                    "name": self.columns[s].label,
+                    "temperature": _json_num(live.get(s)),
+                    "share": round(weights[s] / total, 3) if s in online else 0.0,
+                    "bias_k": round(cal.bias, 3) if cal else None,
+                    "sun_k_per_kw": round(cal.sun, 3) if cal else None,
+                    "noise_k": round(cal.sigma, 3) if cal else None,
+                }
+            )
         return out
 
     async def async_overview(self) -> dict[str, Any]:
@@ -362,7 +488,7 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         insight: dict[str, Any] = {}
         if model is not None:
             insight = await self.hass.async_add_executor_job(
-                _insight, model, self.dataset, live
+                _insight, model, self.view(), live
             )
         per_step = STEP_SECONDS / 3600
         rooms = []
@@ -373,14 +499,17 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
                 {
                     "id": room,
                     "name": self.label(room),
-                    "entity_id": self.columns[room].signal.entity_id,
+                    "sensors": self.sensor_info(room, live),
                     "temperature": _json_num(live.get(room)),
                     "tau_out_h": params.tau_out_h if params else None,
                     "tau_mass_h": params.tau_mass_h if params else None,
                     "mass_h": params.mass_h if params else None,
                     "one_step_rmse": params.rmse_one_step if params else None,
                     "coupling_h": {
-                        o: 1 / g for o, g in params.g_rooms.items() if g > 1e-6
+                        # Slower than ~6 weeks is "not coupled" for display.
+                        o: 1 / g
+                        for o, g in params.g_rooms.items()
+                        if g > 1e-3
                     }
                     if params
                     else {},
@@ -420,14 +549,22 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
 
 
 def _fit_and_validate(
-    ds: Dataset, spec: ModelSpec
+    raw: Dataset,
+    spec: ModelSpec,
+    zones: fusion_mod.Zones,
+    solar: str | None,
 ) -> tuple[ThermalModel, dict[str, list[float | None]]]:
+    # Calibrate sensors against each other, then fit on fused room temps.
+    cal = fusion_mod.learn(raw, zones, solar)
+    ds = fusion_mod.view(raw, zones, cal, solar)
     split = int(ds.rows * (1 - HOLDOUT_FRACTION))
     holdout_model = fit(ds, spec, slice(0, split))
     validation = validate(
         holdout_model, ds, slice(split, None), horizon_h=VALIDATION_HORIZON_H
     )
-    return fit(ds, spec), validation
+    model = fit(ds, spec)
+    model.fusion = fusion_mod.to_dict(cal)
+    return model, validation
 
 
 def _insight(
@@ -451,3 +588,8 @@ def _insight(
 
 def _json_num(v: float | None) -> float | None:
     return None if v is None or math.isnan(v) else round(v, 3)
+
+
+def _last_known(series: np.ndarray) -> float:
+    known = series[~np.isnan(series)]
+    return float(known[-1]) if known.size else float("nan")

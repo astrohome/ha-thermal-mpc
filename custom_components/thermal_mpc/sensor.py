@@ -166,7 +166,7 @@ class TimeConstantSensor(ThermalEntity, SensorEntity):
 
     def __init__(self, coordinator: ThermalCoordinator, room: str) -> None:
         """Initialise for one room column."""
-        super().__init__(coordinator, f"time_constant_{room.removeprefix('room:')}")
+        super().__init__(coordinator, f"time_constant_{room.removeprefix('zone:')}")
         self.room = room
         self._attr_translation_placeholders = {"room": coordinator.label(room)}
 
@@ -189,11 +189,20 @@ class TimeConstantSensor(ThermalEntity, SensorEntity):
         return {
             "gains_k_per_h": {label(k): _r(v) for k, v in p.gains.items()},
             "coupling_hours": {
-                label(k): _r(1 / v, 1) for k, v in p.g_rooms.items() if v > 1e-6
+                label(k): _r(1 / v, 1) for k, v in p.g_rooms.items() if v > 1e-3
             },
             "thermal_mass_hours": _r(p.tau_mass_h, 1),
             "thermal_mass_coupling_per_h": _r(p.mass_h),
             "offset_k_per_h": _r(p.offset),
+            "sensors": {
+                self.coordinator.columns[sc].label: {
+                    "bias_k": _r(cal.bias),
+                    "sun_k_per_kw": _r(cal.sun),
+                    "noise_k": _r(cal.sigma),
+                }
+                for sc, cal in self.coordinator.fusion.get(self.room, {}).items()
+                if sc in self.coordinator.columns
+            },
             "one_step_rmse_k": _r(p.rmse_one_step),
             "samples": p.n_samples,
         }

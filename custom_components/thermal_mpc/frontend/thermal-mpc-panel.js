@@ -624,8 +624,31 @@ class ThermalMpcPanel extends HTMLElement {
           ${Object.entries(r.coupling_h || {}).map(([k, h]) => `<div><dt>Coupling to ${esc(e.labels[k] || k)}</dt><dd>${fmt(h, 1)} h</dd></div>`).join("")}
           <div><dt>Prediction error 1 / 3 / 6 h</dt><dd>${fmt(v["1h"])} / ${fmt(v["3h"])} / ${fmt(v["6h"])} K</dd></div>
         </dl>
+        ${this._sensorTable(r)}
         ${this._replayChart(e, r)}
       </div>`;
+  }
+
+  _sensorTable(r) {
+    const sensors = r.sensors || [];
+    if (sensors.length < 2) return "";
+    const pct = (v) => (v == null ? "–" : `${Math.round(v * 100)} %`);
+    return `
+      <h3 class="sub-h">Sensors in this room</h3>
+      <table class="sensors">
+        <thead><tr><th>Sensor</th><th>Now °C</th><th>Share</th><th>Offset K</th><th>Sun K/kW</th><th>Noise K</th></tr></thead>
+        <tbody>${sensors.map((s) => `
+          <tr${s.share === 0 ? ' class="offline"' : ""}>
+            <td title="${esc(s.entity_id)}">${esc(clip(s.name, 28))}</td>
+            <td>${s.temperature == null ? "offline" : fmt(s.temperature, 1)}</td>
+            <td>${pct(s.share)}</td>
+            <td>${s.bias_k == null ? "–" : signed(s.bias_k, 2)}</td>
+            <td>${s.sun_k_per_kw == null ? "–" : signed(s.sun_k_per_kw, 2)}</td>
+            <td>${s.noise_k == null ? "–" : fmt(s.noise_k, 2)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+      <p class="note small">Offsets and sun exposure are learned by comparing the sensors with each other; the room temperature blends them, trusting quieter sensors more.</p>`;
   }
 
   // ------------------------------------------------------------ replay chart
@@ -878,6 +901,12 @@ const STYLE = `
   }
   .tt-h { font-weight: 600; margin-bottom: 2px; }
   .plan { width: 100%; height: auto; display: block; }
+  table.sensors { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+  table.sensors th { text-align: left; font-weight: 500; color: var(--secondary-text-color); padding: 4px 6px 4px 0; border-bottom: 1px solid var(--divider-color); }
+  table.sensors td { padding: 4px 6px 4px 0; border-bottom: 1px solid var(--divider-color); white-space: nowrap; }
+  table.sensors td:first-child { white-space: normal; }
+  table.sensors th:not(:first-child), table.sensors td:not(:first-child) { text-align: right; }
+  table.sensors tr.offline td { color: var(--secondary-text-color); }
   .bandfill { fill: var(--secondary-text-color); opacity: .12; }
   .sw.bandsw { background: var(--secondary-text-color); opacity: .25; }
   .gridline.faint { opacity: .5; }

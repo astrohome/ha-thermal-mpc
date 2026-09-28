@@ -66,7 +66,7 @@ async def test_model_from_older_code_is_refitted(hass: HomeAssistant, hass_stora
         domain=DOMAIN, title="Thermal model", options=OPTIONS, unique_id="x"
     )
     rooms = {
-        f"room:{e}": {
+        f"zone:{e}": {
             "g_out": 0.0,
             "g_rooms": {},
             "gains": {},

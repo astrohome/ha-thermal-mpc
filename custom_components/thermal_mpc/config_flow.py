@@ -13,6 +13,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
     NumberSelector,
@@ -29,6 +30,7 @@ from .const import (
     CONF_CLIMATE,
     CONF_ENERGY_WEIGHT,
     CONF_FAN,
+    CONF_GROUP_BY_AREA,
     CONF_OUTDOOR,
     CONF_ROOMS,
     CONF_SOLAR,
@@ -65,6 +67,7 @@ async def _entities_schema(hass: HomeAssistant) -> vol.Schema:
                 domain="sensor", device_class="temperature", multiple=True
             )
         ),
+        vol.Optional(CONF_GROUP_BY_AREA, default=True): BooleanSelector(),
         vol.Required(CONF_OUTDOOR): EntitySelector(
             EntitySelectorConfig(domain=["sensor", "weather"])
         ),

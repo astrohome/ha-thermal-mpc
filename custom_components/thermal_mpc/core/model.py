@@ -119,6 +119,7 @@ class ThermalModel:
     rooms: dict[str, RoomParams]
     inputs: list[str]
     unused_inputs: list[str] = field(default_factory=list)
+    fusion: dict[str, Any] = field(default_factory=dict)  # sensor calibration
 
     def derivative(
         self,
@@ -253,6 +254,7 @@ class ThermalModel:
             "outdoor": self.outdoor,
             "inputs": self.inputs,
             "unused_inputs": self.unused_inputs,
+            "fusion": self.fusion,
             "rooms": {k: asdict(v) for k, v in self.rooms.items()},
         }
 
@@ -264,6 +266,7 @@ class ThermalModel:
             outdoor=data["outdoor"],
             inputs=data["inputs"],
             unused_inputs=data.get("unused_inputs", []),
+            fusion=data.get("fusion", {}),
             rooms={k: RoomParams(**v) for k, v in data["rooms"].items()},
         )
 

@@ -95,7 +95,7 @@ def _settings(
 async def async_plan(coordinator: ThermalCoordinator) -> dict[str, Any] | None:
     """Build forecast inputs and run the planner (None without a model)."""
     model = coordinator.result.model
-    ds = coordinator.dataset
+    ds = coordinator.view()
     if model is None or ds.rows == 0:
         return None
     hass = coordinator.hass

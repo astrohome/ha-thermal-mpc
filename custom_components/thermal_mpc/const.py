@@ -16,6 +16,7 @@ CONF_CLIMATE: Final = "climate"
 CONF_SOLAR: Final = "solar"
 CONF_FAN: Final = "fan"
 CONF_VENTILATION: Final = "ventilation"
+CONF_GROUP_BY_AREA: Final = "group_by_area"
 CONF_WEATHER_FORECAST: Final = "weather_forecast"
 CONF_SOLAR_FORECAST: Final = "solar_forecast"
 CONF_TARGET: Final = "target"
@@ -47,7 +48,7 @@ VALIDATION_HORIZON_H: Final = 6.0
 
 STORAGE_VERSION: Final = 1
 # Bump when fitting changes so stored models are refitted at the next update.
-FIT_VERSION: Final = 3
+FIT_VERSION: Final = 4
 
 PANEL_URL_PATH: Final = "thermal-model"
 PANEL_COMPONENT: Final = "thermal-mpc-panel"
