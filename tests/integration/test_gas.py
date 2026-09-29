@@ -97,12 +97,15 @@ async def test_counter_backfill(hass: HomeAssistant, freezer) -> None:
 async def test_unit_change_rereads_gas(hass: HomeAssistant, freezer) -> None:
     """Gas collected under the old unit is re-read, not kept mis-scaled."""
     start = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
+    # Just before the dataset starts: a report exactly at the start of the
+    # re-read window is not returned by the recorder.
+    freezer.move_to(start - timedelta(hours=3, minutes=1))
+    hass.states.async_set("sensor.gas", "1000", {"unit_of_measurement": "CCF"})
     freezer.move_to(start - timedelta(hours=3))
     hass.states.async_set("sensor.living", "20.0")
     hass.states.async_set("sensor.bedroom", "19.0")
     hass.states.async_set("weather.home", "cloudy", {"temperature": -5.0})
     hass.states.async_set("climate.thermostat", "heat", {"hvac_action": "idle"})
-    hass.states.async_set("sensor.gas", "1000", {"unit_of_measurement": "CCF"})
     await hass.async_block_till_done(wait_background_tasks=True)
     freezer.move_to(start - timedelta(minutes=62))
     hass.states.async_set("sensor.gas", "1005", {"unit_of_measurement": "CCF"})
@@ -112,6 +115,9 @@ async def test_unit_change_rereads_gas(hass: HomeAssistant, freezer) -> None:
 
     freezer.move_to(start + timedelta(minutes=5))
     entry = await _setup(hass, {**OPTIONS, CONF_GAS_UNIT: "auto"})
+    assert entry.runtime_data.dataset.start == pytest.approx(
+        (start - timedelta(hours=3)).timestamp()
+    )
     coordinator = entry.runtime_data
     step_h = coordinator.dataset.step / 3600
     ccf = np.nansum(coordinator.dataset.columns[GAS]) * step_h
