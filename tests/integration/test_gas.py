@@ -94,6 +94,41 @@ async def test_counter_backfill(hass: HomeAssistant, freezer) -> None:
     assert np.count_nonzero(np.nan_to_num(rate)) == 2
 
 
+async def test_unit_change_rereads_gas(hass: HomeAssistant, freezer) -> None:
+    """Gas collected under the old unit is re-read, not kept mis-scaled."""
+    start = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
+    freezer.move_to(start - timedelta(hours=3))
+    hass.states.async_set("sensor.living", "20.0")
+    hass.states.async_set("sensor.bedroom", "19.0")
+    hass.states.async_set("weather.home", "cloudy", {"temperature": -5.0})
+    hass.states.async_set("climate.thermostat", "heat", {"hvac_action": "idle"})
+    hass.states.async_set("sensor.gas", "1000", {"unit_of_measurement": "CCF"})
+    await hass.async_block_till_done(wait_background_tasks=True)
+    freezer.move_to(start - timedelta(minutes=62))
+    hass.states.async_set("sensor.gas", "1005", {"unit_of_measurement": "CCF"})
+    freezer.move_to(start - timedelta(minutes=32))
+    hass.states.async_set("sensor.gas", "1010", {"unit_of_measurement": "CCF"})
+    await async_wait_recording_done(hass)
+
+    freezer.move_to(start + timedelta(minutes=5))
+    entry = await _setup(hass, {**OPTIONS, CONF_GAS_UNIT: "auto"})
+    coordinator = entry.runtime_data
+    step_h = coordinator.dataset.step / 3600
+    ccf = np.nansum(coordinator.dataset.columns[GAS]) * step_h
+    assert ccf == pytest.approx(10 * 30.39)
+    coordinator.async_schedule_save()
+    await coordinator._store._async_handle_write_data()  # noqa: SLF001
+
+    # The meter is fixed to report ft³; the same counts are now 100x less heat.
+    hass.states.async_set("sensor.gas", "1010", {"unit_of_measurement": "ft³"})
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
+    coordinator = entry.runtime_data
+    assert coordinator.gas_unit == "ft³"
+    ft3 = np.nansum(coordinator.dataset.columns[GAS]) * step_h
+    assert ft3 == pytest.approx(10 * FT3_KWH)
+
+
 def _week(gas_kw: float | None) -> dict[str, np.ndarray]:
     n = 7 * 288
     hours = np.arange(n) / 12

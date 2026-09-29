@@ -285,6 +285,18 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             self.dataset.keep_columns(set(self.columns))
         # Missing in storage from older versions: backfill everything once.
         self._backfilled = set(data.get("backfilled", [])) & set(self.columns)
+        # Gas is stored as kW, converted with the meter unit at collection
+        # time. After a unit change (or from a version that did not save the
+        # unit) it is off by the ratio of the units: read it again.
+        gas_stale = bool(self.gas_col) and data.get("gas_unit") != self.gas_unit
+        if gas_stale:
+            _LOGGER.info(
+                "Gas unit is now %s (was %s); re-reading gas history",
+                self.gas_unit,
+                data.get("gas_unit"),
+            )
+            self.dataset.columns.pop(self.gas_col, None)
+            self._backfilled.discard(self.gas_col)
         if data.get("model"):
             model = ThermalModel.from_dict(data["model"])
             # A model for a different set of rooms is useless; refit instead.
@@ -298,11 +310,13 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             ):
                 self.result.model = model
                 self.result.validation = data.get("validation", {})
-                # A model from older fitting code, or for other inputs (a gas
-                # meter added or removed), is shown until the refit, which
-                # happens at the first update (last_fit unset).
+                # A model from older fitting code, for other inputs (a gas
+                # meter added or removed) or fitted on mis-scaled gas, is shown
+                # until the refit, which happens at the first update (last_fit
+                # unset).
                 if (
                     data.get("fit_version") == FIT_VERSION
+                    and not gas_stale
                     and self._inputs_match(model)
                     and (last := data.get("last_fit"))
                 ):
@@ -320,6 +334,7 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
             "model": self.result.model.to_dict() if self.result.model else None,
             "validation": self.result.validation,
             "fit_version": FIT_VERSION,
+            "gas_unit": self.gas_unit,
             "backfilled": sorted(self._backfilled),
             "last_fit": self.result.last_fit.isoformat()
             if self.result.last_fit
