@@ -59,10 +59,16 @@ the heat actually burned. With one configured:
 * the unit comes from the meter, or from the **Gas meter unit** option when
   the meter mislabels it (e.g. a raw ft³ counter reported as CCF). Heat per
   unit: m³ 10.55 kWh, ft³ 0.3039, CCF 30.39, MCF 303.9, therm 29.307, plus
-  Wh/kWh/MWh/MJ/GJ;
+  Wh/kWh/MWh/MJ/GJ. Changing the unit rescales the gas history already
+  collected; rates above 150 kW (no house furnace) are then dropped, which
+  cleans up history from before a meter started reporting its true unit;
 * the furnace's full-fire capacity is learned as the 90th percentile of the
   gas rate while the thermostat heats (≥ 80 % duty). Until 2 h of that have
-  been seen, the model keeps using the heating duty;
+  been seen, or while the gas rate is known for less than half of the data,
+  the model keeps using the heating duty;
+* a capacity outside 3–60 kW usually means the wrong unit. It is listed in
+  the `warnings` attribute of **Model status** and on the panel, along with
+  why the heating duty is modelled instead of gas;
 * the planner still plans a duty per hour, which fires the furnace at
   duty × capacity, and reports the planned gas and, with a **Gas price** set
   (Planner options, per meter unit), its cost.

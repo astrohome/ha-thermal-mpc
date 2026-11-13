@@ -196,6 +196,7 @@ class ThermalMpcPanel extends HTMLElement {
             <div class="s"><button class="retrain" ${this._busy ? "disabled" : ""}>${this._busy ? "Retraining…" : "Retrain now"}</button></div></div>
         </div>
         ${e.message ? `<div class="banner">${esc(e.message)}</div>` : ""}
+        ${(e.warnings || []).map((w) => `<div class="banner">${esc(w)}</div>`).join("")}
       </section>
 
       ${e.plan ? this._planCard(e) : ""}

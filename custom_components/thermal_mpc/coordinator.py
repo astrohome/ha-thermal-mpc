@@ -286,15 +286,23 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
         # Missing in storage from older versions: backfill everything once.
         self._backfilled = set(data.get("backfilled", [])) & set(self.columns)
         # Gas is stored as kW, converted with the meter unit at collection
-        # time. After a unit change (or from a version that did not save the
-        # unit) it is off by the ratio of the units: read it again.
-        gas_stale = bool(self.gas_col) and data.get("gas_unit") != self.gas_unit
-        if gas_stale:
+        # time. After a unit change it is off by the ratio of the units:
+        # rescale it, as the recorder no longer has most of it. From a version
+        # that did not save the unit, read it again.
+        old_unit = gas_mod.normalise_unit(data.get("gas_unit"))
+        gas_stale = bool(self.gas_col) and old_unit != self.gas_unit
+        if gas_stale and old_unit and self.gas_col in self.dataset.columns:
+            ratio = self.gas_kwh_per_unit / gas_mod.KWH_PER_UNIT[old_unit]
             _LOGGER.info(
-                "Gas unit is now %s (was %s); re-reading gas history",
+                "Gas unit is now %s (was %s); rescaling gas history by %g",
                 self.gas_unit,
-                data.get("gas_unit"),
+                old_unit,
+                ratio,
             )
+            col = self.dataset.columns[self.gas_col]
+            self.dataset.columns[self.gas_col] = gas_mod.rescale(col, ratio)
+        elif gas_stale:
+            _LOGGER.info("Gas unit is now %s; re-reading gas history", self.gas_unit)
             self.dataset.columns.pop(self.gas_col, None)
             self._backfilled.discard(self.gas_col)
         if data.get("model"):
@@ -508,6 +516,7 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
                 self.solar_col,
                 self.gas_col,
                 self.heat_col,
+                self.gas_unit,
             )
         except NotEnoughDataError as err:
             self.result.error = f"Not enough data: {err}"
@@ -672,6 +681,7 @@ class ThermalCoordinator(DataUpdateCoordinator[None]):
                 k: _json_num(live.get(k)) for k, c in self.columns.items() if c.sign
             },
             "unused_inputs": model.unused_inputs if model else [],
+            "warnings": model.warnings if model else [],
             "plan": self.plan,
             "rooms": rooms,
             **insight,
@@ -707,24 +717,40 @@ def _fit_and_validate(
     solar: str | None,
     gas: str | None = None,
     duty: str | None = None,
+    gas_unit: str | None = None,
 ) -> tuple[ThermalModel, dict[str, list[float | None]]]:
     # Calibrate sensors against each other, then fit on fused room temps.
     cal = fusion_mod.learn(raw, zones, solar)
     ds = _view(raw, zones, cal, solar, gas)
     capacity: dict[str, float] = {}
+    warnings: list[str] = []
     if gas and duty and gas in spec.inputs:
+        gas_kw = ds.columns.get(gas, np.full(ds.rows, np.nan))
+        nan = np.full(ds.rows, np.nan)
+        temps = [ds.columns.get(k, nan) for k in (*spec.rooms, spec.outdoor)]
+        usable = ~np.isnan(np.vstack(temps)).any(axis=0)
+        share = gas_mod.coverage(gas_kw, usable)
         cap = gas_mod.capacity(
-            ds.columns.get(gas, np.zeros(0)),
-            ds.columns.get(duty, np.zeros(0)),
-            ds.step / 3600,
+            gas_kw, ds.columns.get(duty, np.zeros(0)), ds.step / 3600
         )
-        if cap is None:
-            # Full fire not seen yet, so a planned duty cannot be turned into
-            # kW: model the heating duty instead until it has been.
-            _LOGGER.info("Furnace capacity not known yet; modelling heating duty")
-            spec = _duty_spec(spec, gas, duty)
+        # Windows need every input, so gas missing from much of the data
+        # would leave little to fit on. Without full fire seen, a planned
+        # duty cannot be turned into kW. Either way, model the heating duty
+        # until gas is usable.
+        if share < gas_mod.MIN_COVERAGE:
+            reason = f"gas rate known for only {share:.0%} of the data"
+        elif cap is None:
+            reason = "furnace capacity not known yet"
         else:
+            reason = None
             capacity[gas] = cap
+            if note := gas_mod.capacity_warning(cap, gas_unit):
+                warnings.append(note)
+                _LOGGER.warning(note)
+        if reason:
+            _LOGGER.info("Modelling heating duty instead of gas: %s", reason)
+            warnings.append(f"Modelling heating on/off time: {reason}")
+            spec = _duty_spec(spec, gas, duty)
     split = int(ds.rows * (1 - HOLDOUT_FRACTION))
     holdout_model = fit(ds, spec, slice(0, split))
     validation = validate(
@@ -733,6 +759,7 @@ def _fit_and_validate(
     model = fit(ds, spec)
     model.fusion = fusion_mod.to_dict(cal)
     model.input_capacity = {k: v for k, v in capacity.items() if k in model.inputs}
+    model.warnings = warnings
     return model, validation
 
 

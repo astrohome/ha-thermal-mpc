@@ -10,6 +10,11 @@ Status: **implemented.** Deviations from the design below:
 * The meter's live state is a running total, so "now" values (heat budget,
   panel inputs) use the latest collected rate.
 * 60 ft³/h is 18.2 kW with the table below (not ~17 kW as first written).
+* The meter did switch from raw ft³ to true CCF (around 2026-09-29), leaving
+  the history mis-scaled by 100×. A unit change now rescales stored gas
+  (dropping rates above 150 kW) instead of re-reading only what the recorder
+  still has. Gas known for under half of the data also falls back to the
+  duty, and a capacity outside 3–60 kW is reported as a model warning.
 
 ## Why
 

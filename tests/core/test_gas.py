@@ -109,3 +109,30 @@ def test_gas_input_predicts_two_stage_furnace_better_than_duty():
         curves = validate(model, ds, slice(split, None))
         errors[heat] = max(c[-1] for c in curves.values())
     assert errors["gas"] < 0.6 * errors["duty"]
+
+
+def test_rescale_is_exact_and_drops_impossible_rates():
+    ft3 = np.array([0.0, 0.18, np.nan, 0.2])  # true CCF stored as ft³
+    np.testing.assert_allclose(
+        gas.rescale(ft3, 30.39 / 0.3039), [0.0, 18.0, np.nan, 20.0]
+    )
+    # Older rows that were right in ft³ are 100x too large in CCF: dropped.
+    early = np.array([0.0, 17.0, 7.3])
+    out = gas.rescale(early, 100.0)
+    assert out[0] == 0.0
+    assert np.isnan(out[1:]).all()
+    # Going down never drops anything.
+    np.testing.assert_allclose(gas.rescale(early, 0.01), early * 0.01)
+
+
+def test_coverage():
+    g = np.array([1.0, np.nan, 0.0, np.nan])
+    assert gas.coverage(g, np.array([True, True, True, False])) == pytest.approx(2 / 3)
+    assert gas.coverage(g, np.zeros(4, bool)) == 0.0
+
+
+def test_capacity_warning():
+    assert gas.capacity_warning(18.0, "CCF") is None
+    assert "0.24 kW" in gas.capacity_warning(0.24, "ft³")
+    assert "ft³" in gas.capacity_warning(0.24, "ft³")
+    assert gas.capacity_warning(1700.0, "CCF") is not None

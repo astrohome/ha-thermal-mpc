@@ -86,6 +86,7 @@ class StatusSensor(ThermalEntity, SensorEntity):
             "unused_inputs": [self.coordinator.label(i) for i in model.unused_inputs]
             if model
             else [],
+            "warnings": model.warnings if model else [],
         }
 
 

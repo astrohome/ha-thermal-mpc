@@ -24,6 +24,11 @@ SMOOTH_STEPS = 3  # centred moving average (15 min at 5-minute steps)
 FULL_FIRE_DUTY = 0.8  # steps with at least this duty count as full fire
 CAPACITY_PERCENTILE = 90
 MIN_FULL_FIRE_H = 2.0
+MIN_COVERAGE = 0.5  # share of usable rows with a gas rate to model gas
+# Above this a 5-minute rate is not a house furnace (a counter misread).
+MAX_RATE_KW = 150.0
+# Full-fire heat input of a house furnace (about 10k to 200k BTU/h).
+PLAUSIBLE_CAPACITY_KW = (3.0, 60.0)
 
 
 def normalise_unit(unit: str | None) -> str | None:
@@ -74,3 +79,36 @@ def capacity(gas_kw: np.ndarray, duty: np.ndarray, step_h: float) -> float | Non
         return None
     value = float(np.percentile(gas_kw[ok], CAPACITY_PERCENTILE))
     return value if value > 0 else None
+
+
+def rescale(gas_kw: np.ndarray, ratio: float) -> np.ndarray:
+    """Convert a stored gas rate to a new meter unit (``ratio`` = new/old kWh).
+
+    The rate is proportional to the unit's kWh, so the conversion is exact.
+    A meter that changed what it counts (raw ft³ under a "CCF" label, then
+    true CCF) leaves the older part off by the ratio after the change: rates
+    no house furnace reaches are dropped rather than kept mis-scaled.
+    """
+    out = np.asarray(gas_kw, dtype=float) * ratio
+    with np.errstate(invalid="ignore"):
+        out[out > MAX_RATE_KW] = np.nan
+    return out
+
+
+def coverage(gas_kw: np.ndarray, usable: np.ndarray) -> float:
+    """Share of ``usable`` rows (temperatures known) that have a gas rate."""
+    usable = np.asarray(usable, dtype=bool)
+    if not usable.any():
+        return 0.0
+    return float((~np.isnan(np.asarray(gas_kw, dtype=float)[usable])).mean())
+
+
+def capacity_warning(value: float, unit: str | None) -> str | None:
+    """Explanation if ``value`` (kW) is not a plausible house furnace."""
+    low, high = PLAUSIBLE_CAPACITY_KW
+    if low <= value <= high:
+        return None
+    return (
+        f"Furnace capacity {value:.2f} kW is outside {low:g}-{high:g} kW: "
+        f"check the gas meter unit (now {unit or 'unknown'})"
+    )

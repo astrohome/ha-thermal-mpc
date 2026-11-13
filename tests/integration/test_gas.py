@@ -94,8 +94,8 @@ async def test_counter_backfill(hass: HomeAssistant, freezer) -> None:
     assert np.count_nonzero(np.nan_to_num(rate)) == 2
 
 
-async def test_unit_change_rereads_gas(hass: HomeAssistant, freezer) -> None:
-    """Gas collected under the old unit is re-read, not kept mis-scaled."""
+async def test_unit_change_rescales_gas(hass: HomeAssistant, freezer) -> None:
+    """Gas collected under the old unit is rescaled, not kept mis-scaled."""
     start = dt_util.utcnow().replace(minute=0, second=0, microsecond=0)
     # Just before the dataset starts: a report exactly at the start of the
     # re-read window is not returned by the recorder.
@@ -122,6 +122,8 @@ async def test_unit_change_rereads_gas(hass: HomeAssistant, freezer) -> None:
     step_h = coordinator.dataset.step / 3600
     ccf = np.nansum(coordinator.dataset.columns[GAS]) * step_h
     assert ccf == pytest.approx(10 * 30.39)
+    # History the recorder no longer has: kept (rescaled), not re-read.
+    coordinator.dataset.columns[GAS] *= 2
     coordinator.async_schedule_save()
     await coordinator._store._async_handle_write_data()  # noqa: SLF001
 
@@ -132,7 +134,7 @@ async def test_unit_change_rereads_gas(hass: HomeAssistant, freezer) -> None:
     coordinator = entry.runtime_data
     assert coordinator.gas_unit == "ft³"
     ft3 = np.nansum(coordinator.dataset.columns[GAS]) * step_h
-    assert ft3 == pytest.approx(10 * FT3_KWH)
+    assert ft3 == pytest.approx(2 * 10 * FT3_KWH)
 
 
 def _week(gas_kw: float | None) -> dict[str, np.ndarray]:
@@ -231,6 +233,31 @@ async def test_falls_back_to_duty_without_capacity(hass: HomeAssistant) -> None:
     assert plan["gas_volume"] is None
     gas = hass.states.get("sensor.thermal_model_planned_gas_24_h")
     assert gas.state == "unknown"
+
+
+async def test_falls_back_to_duty_with_little_gas(hass: HomeAssistant) -> None:
+    entry = await _setup(hass)
+    columns = _week(20.0)
+    columns[GAS][: len(columns[GAS]) * 2 // 3] = np.nan  # meter added late
+    await _fit_and_plan(hass, entry, columns)
+    model = entry.runtime_data.result.model
+    assert HEAT in model.inputs
+    assert GAS not in model.inputs
+    assert any("33%" in w for w in model.warnings)
+
+
+async def test_warns_on_implausible_capacity(hass: HomeAssistant) -> None:
+    entry = await _setup(hass)
+    columns = _week(20.0)
+    columns[GAS] = columns[GAS] / 100  # CCF counted as ft³
+    await _fit_and_plan(hass, entry, columns)
+    model = entry.runtime_data.result.model
+    assert model.input_capacity[GAS] == pytest.approx(0.2, rel=0.1)
+    status = hass.states.get("sensor.thermal_model_model_status")
+    assert len(status.attributes["warnings"]) == 1
+    assert "ft³" in status.attributes["warnings"][0]
+    overview = await entry.runtime_data.async_overview()
+    assert overview["warnings"] == model.warnings
 
 
 async def test_options_flow_stores_gas(hass: HomeAssistant) -> None:
